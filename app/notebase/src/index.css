@@ -1,0 +1,48 @@
+:root {
+  --bg: #eef3f8;
+  --panel: rgba(255, 255, 255, 0.88);
+  --panel-muted: rgba(241, 245, 251, 0.9);
+  --line: rgba(194, 205, 219, 0.82);
+  --ink: #304255;
+  --ink-soft: #6f7f92;
+  --ink-strong: #152033;
+  --ink-accent: #1d6ff2;
+  --mono: 'SF Mono', 'SFMono-Regular', ui-monospace, 'Cascadia Code', Consolas, monospace;
+  --sans:
+    'SF Pro Text', 'SF Pro Display', 'Helvetica Neue', 'Segoe UI', sans-serif;
+
+  color: var(--ink);
+  background:
+    radial-gradient(circle at top left, rgba(202, 226, 255, 0.72), transparent 32%),
+    radial-gradient(circle at top right, rgba(222, 234, 248, 0.9), transparent 28%),
+    linear-gradient(180deg, #f5f8fb 0%, #eaf0f7 100%);
+  font: 16px/1.5 var(--sans);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  appearance: none;
+}

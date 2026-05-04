@@ -1,0 +1,9 @@
+.DS_Store
+.toolchain/
+Users/
+
+node_modules/
+dist/
+
+target/
+app/notebase/src-tauri/target/

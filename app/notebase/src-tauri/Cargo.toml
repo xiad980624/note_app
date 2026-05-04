@@ -1,0 +1,19 @@
+[package]
+name = "notebase"
+version = "0.1.0"
+description = "Local-first notes and knowledge base app"
+authors = ["xd"]
+edition = "2021"
+
+[lib]
+name = "notebase_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
