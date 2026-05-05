@@ -106,12 +106,33 @@
   min-width: 0;
 }
 
+.status-panel.status-panel-failed strong,
+.status-panel.status-panel-degraded strong {
+  color: #8d342f;
+}
+
 .status-dot {
   width: 10px;
   height: 10px;
   border-radius: 999px;
   background: #1faa66;
   box-shadow: 0 0 0 6px rgba(31, 170, 102, 0.12);
+}
+
+.status-dot-checking,
+.status-dot-mounting {
+  background: #ff9f0a;
+  box-shadow: 0 0 0 6px rgba(255, 159, 10, 0.14);
+}
+
+.status-dot-degraded {
+  background: #ff9f0a;
+  box-shadow: 0 0 0 6px rgba(255, 159, 10, 0.14);
+}
+
+.status-dot-failed {
+  background: #ff5a52;
+  box-shadow: 0 0 0 6px rgba(255, 90, 82, 0.14);
 }
 
 .status-panel strong,
@@ -126,6 +147,10 @@
 
 .status-panel > div {
   display: grid;
+}
+
+.status-meta {
+  word-break: break-all;
 }
 
 .workspace-grid {
@@ -204,6 +229,11 @@
   font-size: 0.82rem;
 }
 
+.ghost-action:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
 .nav-item,
 .stack-item {
   width: 100%;
@@ -226,6 +256,11 @@
 
 .stack-item.subtle {
   justify-content: flex-start;
+}
+
+.stack-list.compact {
+  display: grid;
+  gap: 8px;
 }
 
 .tag-cloud {
@@ -263,6 +298,32 @@
 
 .note-card p {
   margin-top: 10px;
+}
+
+.empty-note-state {
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: 16px;
+  background: var(--panel);
+  border: 1px dashed rgba(184, 197, 214, 0.9);
+}
+
+.empty-note-state strong,
+.empty-note-state p,
+.empty-note-state span {
+  display: block;
+}
+
+.empty-note-state p,
+.empty-note-state span {
+  margin-top: 8px;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.empty-note-state code {
+  word-break: break-all;
 }
 
 .view-switcher {
@@ -363,9 +424,22 @@
   font: 0.88rem/1.6 var(--mono);
 }
 
+.note-body-preview {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(247, 250, 255, 0.96);
+  border: 1px solid rgba(199, 209, 224, 0.72);
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: 0.88rem/1.6 var(--mono);
+}
+
 .preview-card,
 .kb-card,
-.nas-config-card {
+.nas-config-card,
+.kb-directory-card {
   margin-top: 12px;
   padding: 14px;
   border-radius: 18px;
@@ -374,6 +448,16 @@
 
 .preview-card.soft {
   background: linear-gradient(180deg, rgba(214, 232, 255, 0.72), rgba(238, 244, 255, 0.92));
+}
+
+.status-card.status-card-degraded,
+.status-card.status-card-checking,
+.status-card.status-card-mounting {
+  background: linear-gradient(180deg, rgba(255, 237, 210, 0.92), rgba(255, 248, 236, 0.98));
+}
+
+.status-card.status-card-failed {
+  background: linear-gradient(180deg, rgba(255, 223, 220, 0.96), rgba(255, 243, 242, 0.98));
 }
 
 .preview-card h3 {
@@ -391,6 +475,46 @@
 .kb-card p {
   margin: 8px 0 0;
   color: var(--ink);
+}
+
+.kb-directory-card strong,
+.kb-directory-card p {
+  display: block;
+}
+
+.kb-directory-card p {
+  margin: 8px 0 0;
+  color: var(--ink);
+}
+
+.directory-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+}
+
+.empty-directory-state {
+  margin-top: 12px;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+}
+
+.inline-actions {
+  display: inline-flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.protocol-switcher {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 14px;
+  border-radius: 999px;
+  background: rgba(226, 234, 244, 0.9);
 }
 
 .field-grid {
@@ -422,6 +546,12 @@
   border-color: rgba(29, 111, 242, 0.45);
 }
 
+.derived-field strong {
+  color: var(--ink-strong);
+  font-weight: 600;
+  word-break: break-all;
+}
+
 .resolved-path-card {
   margin-top: 14px;
   padding: 14px;
@@ -439,6 +569,12 @@
 .resolved-path-card span {
   display: block;
   margin-top: 8px;
+}
+
+.storage-explanation-row + .storage-explanation-row {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(172, 203, 245, 0.45);
 }
 
 @media (max-width: 1320px) {

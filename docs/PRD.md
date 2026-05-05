@@ -125,10 +125,19 @@ KnowledgeBase/
     projects/
     topics/
   assets/
-  .app/
+    images/
+    files/
+  .notebase/
     index.db
     settings.json
 ```
+
+补充约定：
+- `notes/` 下的 `.md` 文件是真实源数据。
+- 富文本是编辑层能力，落盘优先统一回 Markdown。
+- 图片与附件不内嵌为主存储，独立放在 `assets/images/` 与 `assets/files/`。
+- `.notebase/` 保存索引、缓存和 App 元数据，可重建，不作为真实内容源。
+- 不同格式内容通过索引关系、相对路径引用和笔记元数据进行关联。
 
 ### 4.5 跨端支持
 #### macOS
