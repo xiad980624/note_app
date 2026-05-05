@@ -1,3 +1,5 @@
+import { useState } from 'react'
+
 import './App.css'
 
 const folders = [
@@ -46,6 +48,27 @@ const outgoingLinks = [
 ]
 
 function App() {
+  const [nasConfig, setNasConfig] = useState({
+    profileName: 'UGREEN home data',
+    publicHost: '203.0.113.24',
+    publicPort: '1445',
+    mountName: 'home data',
+    libraryPath: 'notes/notebase',
+  })
+
+  const normalizedLibraryPath = nasConfig.libraryPath.replace(/^\/+|\/+$/g, '')
+  const resolvedStoragePath = normalizedLibraryPath
+    ? `/Volumes/${nasConfig.mountName}/${normalizedLibraryPath}`
+    : `/Volumes/${nasConfig.mountName}`
+
+  const handleConfigChange =
+    (field: keyof typeof nasConfig) => (event: React.ChangeEvent<HTMLInputElement>) => {
+      setNasConfig((current) => ({
+        ...current,
+        [field]: event.target.value,
+      }))
+    }
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -67,7 +90,8 @@ function App() {
           <span className="status-dot" />
           <div>
             <p className="status-label">Storage</p>
-            <strong>UGREEN NAS mounted</strong>
+            <strong>{nasConfig.profileName} mounted</strong>
+            <span className="status-meta">{resolvedStoragePath}</span>
           </div>
         </div>
       </header>
@@ -189,7 +213,9 @@ function App() {
 
           <div className="editor-body">
             <article className="editor-surface">
-              <p className="meta-line">Linked note template • autosave on • synced to mounted NAS path</p>
+              <p className="meta-line">
+                Linked note template • autosave on • synced to {resolvedStoragePath}
+              </p>
               <div className="writing-block">
                 <p>## Why this stack</p>
                 <p>
@@ -200,6 +226,10 @@ function App() {
                 <p>- Editor: TipTap for rich text, remark for markdown transforms</p>
                 <p>- Search: SQLite FTS5 rebuilt from note files when needed</p>
                 <p>- Storage: mounted UGREEN NAS path treated like a local knowledge base folder</p>
+                <p>
+                  - FRP endpoint: {nasConfig.publicHost}:{nasConfig.publicPort}
+                </p>
+                <p>- Finder mount: /Volumes/{nasConfig.mountName}</p>
                 <p>### Reference flow</p>
                 <p>Type [[ to link another note and keep the right panel open for backlinks.</p>
               </div>
@@ -208,7 +238,7 @@ function App() {
                   <span>ts</span>
                   <button type="button">Copy</button>
                 </div>
-                <pre>{`const knowledgeBase = {\n  storage: "mounted-ugreen-nas",\n  editor: ["markdown", "rich-text", "code-blocks"],\n  search: "sqlite-fts5",\n}`}</pre>
+                <pre>{`const nasProfile = {\n  host: "${nasConfig.publicHost}",\n  port: ${nasConfig.publicPort || '1445'},\n  mountPoint: "/Volumes/${nasConfig.mountName}",\n  libraryPath: "${normalizedLibraryPath || '.'}",\n  resolvedStoragePath: "${resolvedStoragePath}",\n}`}</pre>
               </div>
             </article>
 
@@ -225,7 +255,7 @@ function App() {
               <div className="preview-card soft">
                 <p className="section-label">Storage health</p>
                 <strong>Mounted path reachable</strong>
-                <span>Last index refresh 2 min ago</span>
+                <span>{resolvedStoragePath}</span>
               </div>
             </aside>
           </div>
@@ -241,6 +271,55 @@ function App() {
               Expand
             </button>
           </div>
+
+          <section className="inspector-section">
+            <p className="section-label">NAS connection</p>
+            <div className="nas-config-card">
+              <div className="field-grid">
+                <label className="config-field">
+                  <span>Profile</span>
+                  <input
+                    value={nasConfig.profileName}
+                    onChange={handleConfigChange('profileName')}
+                  />
+                </label>
+                <label className="config-field">
+                  <span>Public IP</span>
+                  <input
+                    value={nasConfig.publicHost}
+                    onChange={handleConfigChange('publicHost')}
+                  />
+                </label>
+                <label className="config-field">
+                  <span>Port</span>
+                  <input
+                    value={nasConfig.publicPort}
+                    onChange={handleConfigChange('publicPort')}
+                  />
+                </label>
+                <label className="config-field">
+                  <span>Mounted volume</span>
+                  <input value={nasConfig.mountName} onChange={handleConfigChange('mountName')} />
+                </label>
+                <label className="config-field full-span">
+                  <span>Knowledge base path</span>
+                  <input
+                    value={nasConfig.libraryPath}
+                    onChange={handleConfigChange('libraryPath')}
+                  />
+                </label>
+              </div>
+
+              <div className="resolved-path-card">
+                <p className="section-label">Resolved storage target</p>
+                <strong>{resolvedStoragePath}</strong>
+                <span>
+                  The desktop app still reads the mounted Finder path, while FRP host and port stay
+                  with the profile for reconnect guidance.
+                </span>
+              </div>
+            </div>
+          </section>
 
           <section className="inspector-section">
             <p className="section-label">Backlinks</p>
