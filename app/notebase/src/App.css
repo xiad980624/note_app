@@ -56,7 +56,10 @@
 .preview-card span,
 .note-card p,
 .note-card-top span,
-.status-label {
+.status-label,
+.status-meta,
+.resolved-path-card span,
+.config-field span {
   margin: 0;
   color: var(--ink-soft);
   font-size: 0.82rem;
@@ -115,9 +118,14 @@
 .note-card-top strong,
 .stack-item strong,
 .preview-card strong,
-.kb-card strong {
+.kb-card strong,
+.resolved-path-card strong {
   color: var(--ink-strong);
   font-weight: 600;
+}
+
+.status-panel > div {
+  display: grid;
 }
 
 .workspace-grid {
@@ -356,7 +364,8 @@
 }
 
 .preview-card,
-.kb-card {
+.kb-card,
+.nas-config-card {
   margin-top: 12px;
   padding: 14px;
   border-radius: 18px;
@@ -384,6 +393,54 @@
   color: var(--ink);
 }
 
+.field-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.config-field {
+  display: grid;
+  gap: 6px;
+}
+
+.config-field.full-span {
+  grid-column: 1 / -1;
+}
+
+.config-field input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(184, 197, 214, 0.9);
+  background: rgba(255, 255, 255, 0.88);
+  color: var(--ink-strong);
+}
+
+.config-field input:focus {
+  outline: 2px solid rgba(29, 111, 242, 0.18);
+  border-color: rgba(29, 111, 242, 0.45);
+}
+
+.resolved-path-card {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(214, 232, 255, 0.48);
+  border: 1px solid rgba(172, 203, 245, 0.7);
+}
+
+.resolved-path-card strong {
+  display: block;
+  margin-top: 4px;
+  word-break: break-all;
+}
+
+.resolved-path-card span {
+  display: block;
+  margin-top: 8px;
+}
+
 @media (max-width: 1320px) {
   .workspace-grid {
     grid-template-columns: 220px 260px minmax(420px, 1fr);
@@ -409,6 +466,10 @@
   }
 
   .editor-body {
+    grid-template-columns: 1fr;
+  }
+
+  .field-grid {
     grid-template-columns: 1fr;
   }
 }
