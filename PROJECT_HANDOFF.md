@@ -11,12 +11,17 @@ Workspace root:
 Code directory:
 - `/Users/xd/llm_develop/note_app/app/notebase`
 
-Current branch:
+Current branch at handoff creation time:
 - `feature/nas-connection-config`
 
 Latest committed base:
 - `main` commit `3d6d645`
 - commit message: `Initial note app prototype`
+
+Current repository status as of 2026-05-05 after merge:
+- `main` includes merge commit `5882b6f`
+- merged PR: `feature/nas-connection-config`
+- current follow-up branch for implementation: `feature/macos-auto-webdav-mount`
 
 ## 2. Product direction
 
@@ -85,6 +90,10 @@ Current recommendation:
   - mount name
   - remote path
   - knowledge base relative path
+- WebDAV remote path should preserve the NAS path form used by the server.
+  Current known example:
+  - `http://47.103.114.153//home/data`
+  - note the double slash before `home/data`
 - App should:
   1. check whether mounted path already exists
   2. if yes, read files directly
@@ -123,17 +132,68 @@ Implemented already:
 - note list, editor area, backlinks panel, search bar
 - NAS configuration UI prototype with:
   - profile name
+  - protocol
   - public IP
   - port
-  - mounted volume
+  - username
+  - password
+  - remote WebDAV path
   - knowledge base path
+- derived mount point from the WebDAV path
 - resolved storage path preview
+- WebDAV URL preview
+- persisted NAS profile in frontend local storage
+- frontend mount state flow:
+  - checking
+  - mounting
+  - mounted
+  - degraded
+  - failed
+- frontend persists:
+  - NAS profile
+  - last mount result
+  - last library overview
+  - last note index summary
+  - selected note id
+- when the chosen folder is empty, the app initializes a fresh knowledge base layout and explicitly tells the user to create the first note
+- Tauri commands added:
+  - `create_note`
+  - `load_note_document`
+  - `load_knowledge_base_index`
+  - `inspect_knowledge_base`
+  - `check_mount_status`
+  - `attempt_webdav_mount`
 
-Current uncommitted work:
-- modified `App.tsx`
-- modified `App.css`
+Current implementation detail:
+- frontend saves the NAS profile locally and restores it on app reload
+- frontend can manually trigger:
+  - mount availability check
+  - reconnect attempt
+- browser preview now explicitly reports that native mount actions require the Tauri desktop runtime
+- macOS Tauri layer now:
+  - checks `/Volumes/<mount name>`
+  - derives the expected mount point from the last segment of the WebDAV path
+  - computes the resolved knowledge base path
+  - ensures the knowledge base layout:
+    - `notes/`
+    - `assets/images/`
+    - `assets/files/`
+    - `.notebase/`
+  - inspects whether the resolved knowledge base directory is readable
+  - returns sample directory entries for quick validation
+  - recursively indexes markdown notes from `notes/**/*.md`
+  - creates a first markdown note directly under `notes/inbox/`
+  - loads full markdown note content for the selected note
+  - checks remote WebDAV availability when the local volume is missing
+  - attempts macOS Finder-style `mount volume` mounting for reconnect
 
-These changes add NAS config fields into the prototype UI, but do not yet implement automatic mount behavior.
+Current limitation:
+- automatic mount is still a first-pass prototype
+- no secure credential storage yet
+- full note body loading exists and is shown in the editor panel, but editing and save-back are not wired yet
+- mount success still depends on local macOS permissions and environment
+- browser preview can explain mount actions, but it cannot execute native WebDAV mount commands
+- the macOS-mounted volume name may still differ from the path-derived expectation and should always prefer the actual system mount result
 
 ## 6. Environment status
 
@@ -157,23 +217,34 @@ No assumption should be made that it is still running now.
 
 ## 7. Recommended next implementation steps
 
-Recommended next branch after current work is committed:
-- `feature/macos-auto-webdav-mount`
+Recommended next branch after this work is committed:
+- `feature/knowledge-base-directory-access`
 
 Recommended next coding steps:
-1. Persist NAS connection profile locally in the desktop app
-2. Add mount status state machine in frontend:
-   - mounted
-   - checking
-   - mounting
-   - degraded
-   - failed
-3. Add Tauri commands for macOS:
-   - check if mount path exists
-   - attempt WebDAV mount using system capability
-   - return mount result and resolved local path
+1. Move NAS credentials from plain local storage to a safer desktop storage path
+2. Wire editable markdown state in the editor panel for the selected note
+3. Add a save command that writes note body and frontmatter updates back to disk
 4. Keep last opened note content in memory/cache while remote storage is unavailable
-5. Connect resolved local path to actual knowledge base directory selection and reading flow
+5. Add a clearer degraded-mode UX for:
+   - local mount exists and the app created a brand-new knowledge base layout
+   - automatic mount failed
+6. Refine the Finder-style macOS mount flow and volume-name reconciliation for more edge cases
+
+Editing readiness checkpoint:
+- done:
+  - WebDAV reachability check
+  - reconnect attempt through macOS native mount flow
+  - derived mount point and resolved storage path
+  - automatic knowledge base directory initialization
+  - real markdown note indexing
+  - first-note creation flow
+  - selected note full-body loading
+- still missing before real editing:
+  - editable markdown buffer
+  - save / autosave flow
+  - dirty-state and save-status UX
+  - title/frontmatter update rules
+  - attachment insertion flow
 
 ## 8. Suggested architecture note
 
@@ -197,15 +268,12 @@ This will matter later when supporting both:
 
 ## 9. Git notes
 
-Current branch:
-- `feature/nas-connection-config`
+Branch history note:
+- `feature/nas-connection-config` was merged into `main`
+- current implementation continues on `feature/macos-auto-webdav-mount`
 
-Working tree before this handoff:
-- modified `app/notebase/src/App.tsx`
-- modified `app/notebase/src/App.css`
-
-Suggested commit after review:
-- `feat: add NAS connection profile fields to desktop prototype`
+Suggested commit after review for current branch:
+- `feat: add macos webdav mount status flow`
 
 ## 10. Short continuity summary
 
@@ -213,6 +281,6 @@ If resuming this project in a new Codex Project/thread, the fastest starting pro
 
 ```text
 Please continue the NoteBase project from /Users/xd/llm_develop/note_app.
-Read PROJECT_HANDOFF.md first, then continue from the current feature branch.
+Read PROJECT_HANDOFF.md first, then continue from the latest feature branch.
 The next goal is to implement macOS automatic WebDAV mount recovery through system mount capability, not a full custom WebDAV client.
 ```
