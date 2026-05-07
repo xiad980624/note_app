@@ -36,7 +36,7 @@ Core product goals:
 - Code block editing
 - Simple mac-style UI
 - Local-first knowledge base
-- NAS-backed storage
+- Optional NAS-backed sync
 - Search, links, backlinks, and long-term knowledge accumulation
 
 Existing requirements and design docs:
@@ -66,40 +66,42 @@ Important Git workflow rule from user:
 - Branch names should clearly indicate `feature/...` or `bugfix/...`
 - Commit messages should clearly describe what changed
 
-## 4. NAS strategy: latest state
+## 4. Storage strategy: latest state
 
-Initial assumption:
-- UGREEN NAS is already mounted in Finder
-- First prototype treated mounted NAS as a local path under `/Volumes/...`
-
-New product direction after discussion:
-- mac should not rely on users manually reconnecting every time
-- app should attempt to recover access automatically
-- goal is not to implement a full WebDAV client first
-- better mac direction is to call macOS system mount capability for WebDAV, then access mounted files locally
+Latest product direction after discussion:
+- the local offline library is the default and primary working copy
+- macOS default offline path is `~/Documents/NoteBase`
+- app startup should always scan the local offline path first
+- NAS / WebDAV should move from “main storage entry” to an optional sync feature
+- users only see sync configuration when they explicitly choose to enable sync
+- if sync is configured and the remote target is reachable, app should compare local and remote before the first sync decision
+- goal is still not to implement a full custom WebDAV client first
+- better mac direction remains calling macOS system mount capability for WebDAV, then using the mounted path as a remote sync target
 
 Current recommendation:
 
 ### macOS
-- Save connection profile:
+- Default knowledge base:
+  - `~/Documents/NoteBase`
+- Remote sync profile:
   - host or public IP
   - port
   - username
   - password
   - protocol
-  - mount name
-  - remote path
-  - knowledge base relative path
+  - remote WebDAV path
+  - remote knowledge base relative path
 - WebDAV remote path should preserve the NAS path form used by the server.
   Current known example:
   - `http://47.103.114.153//home/data`
   - note the double slash before `home/data`
 - App should:
-  1. check whether mounted path already exists
-  2. if yes, read files directly
-  3. if not, attempt automatic WebDAV mount through macOS system capability
-  4. if mount succeeds, continue using mounted local path
-  5. if mount fails, keep cached/open content visible and show degraded state
+  1. always scan the local offline library on launch
+  2. only open sync configuration when user clicks sync
+  3. if sync is configured, test remote reachability and mount when needed
+  4. compare local and remote when both contain content
+  5. ask user whether to pull remote down or push local up before the first alignment step
+  6. keep local editing available even if remote sync is unavailable
 
 ### iPhone
 - iPhone should not be treated like mac Finder mount
@@ -130,69 +132,78 @@ Tauri shell files:
 Implemented already:
 - mac-style three-column note workspace prototype
 - note list, editor area, backlinks panel, search bar
-- NAS configuration UI prototype with:
-  - profile name
-  - protocol
-  - public IP
-  - port
-  - username
-  - password
-  - remote WebDAV path
-  - knowledge base path
-- derived mount point from the WebDAV path
-- resolved storage path preview
-- WebDAV URL preview
-- persisted NAS profile in frontend local storage
-- frontend mount state flow:
-  - checking
-  - mounting
-  - mounted
-  - degraded
-  - failed
-- frontend persists:
-  - NAS profile
-  - last mount result
-  - last library overview
-  - last note index summary
-  - selected note id
-- when the chosen folder is empty, the app initializes a fresh knowledge base layout and explicitly tells the user to create the first note
+- default local offline knowledge base path initialization
+- local path scanning on launch
+- real markdown note indexing from the local offline library
+- first-note creation flow in the local offline library
+- full note body loading and save-back to local markdown files
+- remote sync entry moved behind a dedicated sync button
+- sync configuration stored separately from the main editor workflow
+- remote WebDAV path handling with automatic mount-point derivation
+- first-pass sync readiness check:
+  - local snapshot
+  - remote snapshot
+  - initial sync direction decision when both sides contain content
+- first-pass incremental sync:
+  - push local offline library to remote
+  - pull remote library to local
+  - skip unchanged files
+  - stop on file-level conflicts instead of silently overwriting newer destination files
+  - persist local sync manifest metadata for stronger incremental comparisons
+  - allow per-file conflict resolution:
+    - keep local
+    - keep remote
 - Tauri commands added:
+  - `get_default_local_library`
+  - `inspect_library`
+  - `load_library_index`
   - `create_note`
   - `load_note_document`
-  - `load_knowledge_base_index`
-  - `inspect_knowledge_base`
-  - `check_mount_status`
-  - `attempt_webdav_mount`
+  - `save_note_document`
+  - `prepare_sync`
+  - `sync_libraries`
 
 Current implementation detail:
-- frontend saves the NAS profile locally and restores it on app reload
-- frontend can manually trigger:
-  - mount availability check
-  - reconnect attempt
-- browser preview now explicitly reports that native mount actions require the Tauri desktop runtime
+- frontend saves the optional sync profile locally and restores it on app reload
+- frontend always opens into the local offline library, even with no remote target configured
+- frontend editor now:
+  - loads the selected markdown note into an editable textarea
+  - tracks dirty state
+  - saves with a button or `Cmd/Ctrl + S`
+  - autosaves after a short idle period
+  - warns before switching notes or creating a new note while edits are unsaved
+- sync UI now:
+  - lives behind the top-right sync button
+  - shows a warning state when remote sync is missing or unhealthy
+  - opens a dedicated modal for sync configuration
+  - opens a dedicated decision modal when local and remote both contain content
+- browser preview now explicitly reports that filesystem and sync actions require the Tauri desktop runtime
 - macOS Tauri layer now:
-  - checks `/Volumes/<mount name>`
-  - derives the expected mount point from the last segment of the WebDAV path
-  - computes the resolved knowledge base path
+  - prepares the default local knowledge base path under `~/Documents/NoteBase`
   - ensures the knowledge base layout:
     - `notes/`
     - `assets/images/`
     - `assets/files/`
     - `.notebase/`
-  - inspects whether the resolved knowledge base directory is readable
-  - returns sample directory entries for quick validation
-  - recursively indexes markdown notes from `notes/**/*.md`
-  - creates a first markdown note directly under `notes/inbox/`
-  - loads full markdown note content for the selected note
-  - checks remote WebDAV availability when the local volume is missing
-  - attempts macOS Finder-style `mount volume` mounting for reconnect
+  - indexes markdown notes from the local library
+  - loads and saves markdown notes in the local library
+  - checks remote WebDAV availability when sync is configured
+  - attempts macOS Finder-style `mount volume` mounting for remote sync
+  - compares local and remote snapshots before the first sync alignment
+  - compares file-level state for `notes/` and `assets/` during the first-pass sync implementation
+  - copies changed files incrementally
+  - reports conflicts when the destination version is newer and different
+  - stores sync metadata in `.notebase/sync-manifest.json`
+  - resolves individual conflicted files by explicitly choosing local or remote
 
 Current limitation:
 - automatic mount is still a first-pass prototype
 - no secure credential storage yet
-- full note body loading exists and is shown in the editor panel, but editing and save-back are not wired yet
-- mount success still depends on local macOS permissions and environment
-- browser preview can explain mount actions, but it cannot execute native WebDAV mount commands
+- current sync is still directional and user-triggered, not a full automatic two-way merge engine
+- current sync does not delete extra destination files
+- conflict resolution currently supports “keep local” or “keep remote”, but not inline diff/merge editing
+- attachment insertion flow is not wired yet
+- browser preview can explain mount and sync actions, but it cannot execute native filesystem or WebDAV commands
 - the macOS-mounted volume name may still differ from the path-derived expectation and should always prefer the actual system mount result
 
 ## 6. Environment status
@@ -221,30 +232,50 @@ Recommended next branch after this work is committed:
 - `feature/knowledge-base-directory-access`
 
 Recommended next coding steps:
-1. Move NAS credentials from plain local storage to a safer desktop storage path
-2. Wire editable markdown state in the editor panel for the selected note
-3. Add a save command that writes note body and frontmatter updates back to disk
-4. Keep last opened note content in memory/cache while remote storage is unavailable
-5. Add a clearer degraded-mode UX for:
-   - local mount exists and the app created a brand-new knowledge base layout
-   - automatic mount failed
-6. Refine the Finder-style macOS mount flow and volume-name reconciliation for more edge cases
+1. Move sync credentials from plain local storage to a safer desktop storage path
+2. Add attachment insertion and local asset-path linking flow
+3. Add delete propagation and tombstone strategy for sync
+4. Add inline diff/merge UI on top of the current per-file conflict resolution actions
+5. Add sync history, retry queue, and clearer failure recovery UX
+6. Refine Finder-style macOS mount flow and volume-name reconciliation for more edge cases
+
+Optimization backlog:
+- configurable local offline path selection instead of only the default path
+- background sync and scheduled sync policies
+- sync progress per file, not just whole-task status
+- richer diff UI before the first sync decision
+- secure credential storage and possibly keychain integration
+- cross-device conflict merge helpers
+- persisted sync metadata / manifests to support stronger incremental decisions
+- remote-side manifest or ETag support to reduce redundant remote comparisons
+
+Sync remaining work checklist:
+- add delete propagation and tombstone handling
+- add inline diff preview before resolving a conflicted file
+- allow "keep both" by writing a duplicated conflict copy instead of forcing one side
+- persist richer sync history for troubleshooting and rollback confidence
+- add retry queue and resumable sync after network interruption
+- support background / scheduled sync without blocking local editing
+- move sync credentials to safer desktop storage
+- evaluate remote-side metadata support such as ETag or manifest files
 
 Editing readiness checkpoint:
 - done:
-  - WebDAV reachability check
-  - reconnect attempt through macOS native mount flow
-  - derived mount point and resolved storage path
-  - automatic knowledge base directory initialization
+  - default local offline path initialization
   - real markdown note indexing
   - first-note creation flow
   - selected note full-body loading
-- still missing before real editing:
   - editable markdown buffer
-  - save / autosave flow
+  - save-to-disk command
   - dirty-state and save-status UX
-  - title/frontmatter update rules
+  - title/frontmatter timestamp refresh on save
+  - optional remote sync entry and first-pass sync direction flow
+  - first-pass incremental sync with file-level conflict detection
+  - persisted sync manifest metadata
+  - per-file conflict resolution actions
+- still missing before real editing:
   - attachment insertion flow
+  - richer sync conflict recovery flow
 
 ## 8. Suggested architecture note
 
