@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import { useEffect, useMemo, useState, type ChangeEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ChangeEvent } from 'react'
 
 import './App.css'
 
@@ -12,28 +12,25 @@ declare global {
 }
 
 const folders = [
-  { name: 'Inbox', count: 14, active: true },
-  { name: 'Projects', count: 8 },
-  { name: 'Topics', count: 23 },
-  { name: 'Archive', count: 41 },
+  { name: 'Inbox', active: true },
+  { name: 'Projects' },
+  { name: 'Topics' },
+  { name: 'Archive' },
 ]
 
-const tags = ['#design-system', '#nas-sync', '#vibe-coding', '#weekly-review']
-
+const tags = ['#offline-first', '#sync', '#markdown', '#knowledge-base']
 const backlinks = ['[[Desktop MVP]]', '[[Storage Strategy]]', '[[Editor Benchmarks]]']
+const outgoingLinks = ['[[Knowledge Base Shape]]', '[[Sync Flow]]', '[[Search Experience]]']
 
-const outgoingLinks = ['[[Knowledge Base Shape]]', '[[UGREEN NAS Flow]]', '[[Search Experience]]']
-
-const STORAGE_KEY = 'notebase:nas-profile'
-const MOUNT_STATE_KEY = 'notebase:mount-state'
-const LIBRARY_OVERVIEW_KEY = 'notebase:library-overview'
-const KNOWLEDGE_BASE_INDEX_KEY = 'notebase:knowledge-base-index'
+const SYNC_CONFIG_KEY = 'notebase:sync-config'
 const SELECTED_NOTE_KEY = 'notebase:selected-note-id'
 const INVOKE_TIMEOUT_MS = 12000
+const BROWSER_LOCAL_PATH_PLACEHOLDER = '~/Documents/NoteBase'
 
-type MountStatus = 'checking' | 'mounting' | 'mounted' | 'degraded' | 'failed'
+type SaveStatus = 'idle' | 'dirty' | 'saving' | 'saved' | 'error'
+type SyncButtonTone = 'idle' | 'warning' | 'active' | 'busy'
 
-type NasProfile = {
+type SyncConfig = {
   profileName: string
   protocol: 'http' | 'https'
   publicHost: string
@@ -41,17 +38,7 @@ type NasProfile = {
   username: string
   password: string
   remotePath: string
-  libraryPath: string
-}
-
-type MountResponse = {
-  status: MountStatus
-  mounted: boolean
-  mountPoint: string
-  resolvedStoragePath: string
-  webdavUrl: string
-  message: string
-  profileName: string
+  remoteLibraryPath: string
 }
 
 type LibraryOverview = {
@@ -98,26 +85,80 @@ type NoteDocument = {
   message: string
 }
 
-const defaultNasProfile: NasProfile = {
-  profileName: 'UGREEN home data',
+type DefaultLocalLibraryResponse = {
+  rootPath: string
+  message: string
+}
+
+type LibrarySnapshot = {
+  rootPath: string
+  noteCount: number
+  assetFileCount: number
+  latestUpdatedAtMs: number | null
+  hasContent: boolean
+  message: string
+}
+
+type SyncStatusResponse = {
+  status: string
+  configured: boolean
+  reachable: boolean
+  mountPoint: string
+  remoteRootPath: string
+  webdavUrl: string
+  message: string
+  requiresInitialDecision: boolean
+  suggestedDirection: string
+  localSnapshot: LibrarySnapshot | null
+  remoteSnapshot: LibrarySnapshot | null
+  copiedCount: number
+  skippedCount: number
+  conflictCount: number
+  conflicts: string[]
+}
+
+const emptySyncConfig: SyncConfig = {
+  profileName: 'My NAS sync target',
   protocol: 'http',
-  publicHost: '47.103.114.153',
+  publicHost: '',
   publicPort: '',
   username: '',
   password: '',
   remotePath: '//home/data',
-  libraryPath: 'notes/notebase',
+  remoteLibraryPath: 'NoteBase',
 }
 
-const statusLabels: Record<MountStatus, string> = {
-  checking: 'Checking mount',
-  mounting: 'Reconnecting storage',
-  mounted: 'Storage mounted',
-  degraded: 'Mounted with missing library path',
-  failed: 'Storage unavailable',
-}
+const emptySyncStatus = (message: string): SyncStatusResponse => ({
+  status: 'not_configured',
+  configured: false,
+  reachable: false,
+  mountPoint: '',
+  remoteRootPath: '',
+  webdavUrl: '',
+  message,
+  requiresInitialDecision: false,
+  suggestedDirection: 'none',
+  localSnapshot: null,
+  remoteSnapshot: null,
+  copiedCount: 0,
+  skippedCount: 0,
+  conflictCount: 0,
+  conflicts: [],
+})
 
-const normalizeLibraryPath = (libraryPath: string) => libraryPath.replace(/^\/+|\/+$/g, '')
+const isTauriRuntime = () =>
+  typeof window !== 'undefined' && typeof window.__TAURI_INTERNALS__?.invoke === 'function'
+
+const invokeWithTimeout = async <T,>(command: string, payload?: Record<string, unknown>) =>
+  await Promise.race([
+    invoke<T>(command, payload),
+    new Promise<T>((_, reject) => {
+      window.setTimeout(() => {
+        reject(new Error(`Timed out while waiting for ${command}.`))
+      }, INVOKE_TIMEOUT_MS)
+    }),
+  ])
+
 const formatRelativeDate = (updatedAtMs: number | null) => {
   if (!updatedAtMs) {
     return 'No timestamp'
@@ -131,615 +172,613 @@ const formatRelativeDate = (updatedAtMs: number | null) => {
   }).format(new Date(updatedAtMs))
 }
 
-const normalizeRemotePath = (remotePath: string) => {
-  const trimmed = remotePath.trim()
-  if (!trimmed) {
-    return '//'
-  }
-
-  return `//${trimmed.replace(/^\/+/, '')}`
-}
-
-const deriveMountedVolumeName = (remotePath: string) => {
-  const trimmed = normalizeRemotePath(remotePath).replace(/^\/+/, '')
-  const segments = trimmed.split('/').filter(Boolean)
-  return segments.at(-1) ?? 'WebDAV'
-}
-
-const buildMountPoint = (remotePath: string) => `/Volumes/${deriveMountedVolumeName(remotePath)}`
-
-const buildResolvedStoragePath = (remotePath: string, libraryPath: string) => {
-  const mountPoint = buildMountPoint(remotePath)
-  const normalizedLibraryPath = normalizeLibraryPath(libraryPath)
-
-  return normalizedLibraryPath ? `${mountPoint}/${normalizedLibraryPath}` : mountPoint
-}
-
-const buildWebdavUrl = (profile: NasProfile) => {
-  const protocol = profile.protocol === 'https' ? 'https' : 'http'
-  const credentials = profile.username
-    ? `${profile.username}${profile.password ? `:${profile.password}` : ''}@`
-    : ''
-  const portSegment = profile.publicPort.trim() ? `:${profile.publicPort.trim()}` : ''
-
-  return `${protocol}://${credentials}${profile.publicHost.trim()}${portSegment}${normalizeRemotePath(profile.remotePath)}`
-}
-
-const buildMaskedWebdavUrl = (profile: NasProfile) => {
-  const protocol = profile.protocol === 'https' ? 'https' : 'http'
-  const username = profile.username.trim()
-  const credentials = username ? `${username}:••••@` : ''
-  const portSegment = profile.publicPort.trim() ? `:${profile.publicPort.trim()}` : ''
-
-  return `${protocol}://${credentials}${profile.publicHost.trim()}${portSegment}${normalizeRemotePath(profile.remotePath)}`
-}
-
-const isTauriRuntime = () =>
-  typeof window !== 'undefined' &&
-  typeof window.__TAURI_INTERNALS__?.invoke === 'function'
-
-const loadStoredValue = <T,>(key: string, fallback: T): T => {
+const loadStoredSyncConfig = (): SyncConfig | null => {
   if (typeof window === 'undefined') {
-    return fallback
+    return null
   }
 
-  const raw = window.localStorage.getItem(key)
+  const raw = window.localStorage.getItem(SYNC_CONFIG_KEY)
   if (!raw) {
-    return fallback
+    return null
   }
 
   try {
-    return JSON.parse(raw) as T
-  } catch {
-    return fallback
-  }
-}
-
-const invokeWithTimeout = async <T,>(command: string, payload: Record<string, unknown>) =>
-  await Promise.race([
-    invoke<T>(command, payload),
-    new Promise<T>((_, reject) => {
-      window.setTimeout(() => {
-        reject(new Error(`Timed out while waiting for ${command}.`))
-      }, INVOKE_TIMEOUT_MS)
-    }),
-  ])
-
-const loadStoredProfile = (): NasProfile => {
-  if (typeof window === 'undefined') {
-    return defaultNasProfile
-  }
-
-  const raw = window.localStorage.getItem(STORAGE_KEY)
-  if (!raw) {
-    return defaultNasProfile
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as Partial<NasProfile>
+    const parsed = JSON.parse(raw) as Partial<SyncConfig>
     return {
-      ...defaultNasProfile,
+      ...emptySyncConfig,
       ...parsed,
       protocol: parsed.protocol === 'https' ? 'https' : 'http',
     }
   } catch {
-    return defaultNasProfile
+    return null
   }
 }
 
+const syncToneFromStatus = (status: SyncStatusResponse, busy: boolean): SyncButtonTone => {
+  if (busy) {
+    return 'busy'
+  }
+
+  if (
+    !status.configured ||
+    status.status === 'failed' ||
+    status.status === 'decision_required' ||
+    status.status === 'conflicted'
+  ) {
+    return 'warning'
+  }
+
+  if (status.status === 'connected' || status.status === 'synced') {
+    return 'active'
+  }
+
+  return 'idle'
+}
+
+const buildSyncButtonLabel = (status: SyncStatusResponse, busy: boolean) => {
+  if (busy) {
+    return 'Syncing...'
+  }
+
+  if (!status.configured) {
+    return 'Sync !'
+  }
+
+  if (status.status === 'failed') {
+    return 'Sync !'
+  }
+
+  if (status.status === 'conflicted') {
+    return 'Conflicts !'
+  }
+
+  if (status.status === 'decision_required') {
+    return 'Resolve sync'
+  }
+
+  return 'Sync'
+}
+
 function App() {
-  const [nasConfig, setNasConfig] = useState<NasProfile>(() => loadStoredProfile())
-  const [mountState, setMountState] = useState<MountResponse>(() =>
-    loadStoredValue(MOUNT_STATE_KEY, {
-    status: 'checking',
-    mounted: false,
-    mountPoint: buildMountPoint(defaultNasProfile.remotePath),
-    resolvedStoragePath: buildResolvedStoragePath(defaultNasProfile.remotePath, defaultNasProfile.libraryPath),
-    webdavUrl: buildWebdavUrl(defaultNasProfile),
-    message: 'Checking mount state for the current NAS profile.',
-    profileName: defaultNasProfile.profileName,
-  }))
-  const [libraryOverview, setLibraryOverview] = useState<LibraryOverview>(() =>
-    loadStoredValue(LIBRARY_OVERVIEW_KEY, {
-    resolvedStoragePath: buildResolvedStoragePath(defaultNasProfile.remotePath, defaultNasProfile.libraryPath),
+  const [localRootPath, setLocalRootPath] = useState(BROWSER_LOCAL_PATH_PLACEHOLDER)
+  const [localLibraryMessage, setLocalLibraryMessage] = useState(
+    'Preparing the default offline knowledge base path.',
+  )
+  const [libraryOverview, setLibraryOverview] = useState<LibraryOverview>({
+    resolvedStoragePath: BROWSER_LOCAL_PATH_PLACEHOLDER,
     exists: false,
     readable: false,
     directoryCount: 0,
     fileCount: 0,
     sampleEntries: [],
-    message: 'Waiting for a mounted knowledge base path before reading the directory.',
-  }))
-  const [knowledgeBaseIndex, setKnowledgeBaseIndex] = useState<KnowledgeBaseIndex>(() =>
-    loadStoredValue(KNOWLEDGE_BASE_INDEX_KEY, {
-    rootPath: buildResolvedStoragePath(defaultNasProfile.remotePath, defaultNasProfile.libraryPath),
-    notesRoot: `${buildResolvedStoragePath(defaultNasProfile.remotePath, defaultNasProfile.libraryPath)}/notes`,
-    assetsRoot: `${buildResolvedStoragePath(defaultNasProfile.remotePath, defaultNasProfile.libraryPath)}/assets`,
-    hiddenRoot: `${buildResolvedStoragePath(defaultNasProfile.remotePath, defaultNasProfile.libraryPath)}/.notebase`,
+    message: 'Waiting for the offline knowledge base path.',
+  })
+  const [knowledgeBaseIndex, setKnowledgeBaseIndex] = useState<KnowledgeBaseIndex>({
+    rootPath: BROWSER_LOCAL_PATH_PLACEHOLDER,
+    notesRoot: `${BROWSER_LOCAL_PATH_PLACEHOLDER}/notes`,
+    assetsRoot: `${BROWSER_LOCAL_PATH_PLACEHOLDER}/assets`,
+    hiddenRoot: `${BROWSER_LOCAL_PATH_PLACEHOLDER}/.notebase`,
     initializedNewKnowledgeBase: false,
     notes: [],
-    message: 'Waiting for a reachable knowledge base before indexing notes.',
-  }))
-  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(() =>
-    loadStoredValue<string | null>(SELECTED_NOTE_KEY, null),
-  )
+    message: 'Waiting for the offline knowledge base path.',
+  })
+  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') {
+      return null
+    }
+
+    const raw = window.localStorage.getItem(SELECTED_NOTE_KEY)
+    return raw ? (JSON.parse(raw) as string | null) : null
+  })
   const [selectedNoteDocument, setSelectedNoteDocument] = useState<NoteDocument | null>(null)
+  const [editorBody, setEditorBody] = useState('')
+  const [lastSavedBody, setLastSavedBody] = useState('')
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
+  const [saveMessage, setSaveMessage] = useState('Select a note to start editing.')
+  const [syncConfig, setSyncConfig] = useState<SyncConfig | null>(() => loadStoredSyncConfig())
+  const [draftSyncConfig, setDraftSyncConfig] = useState<SyncConfig>(() => loadStoredSyncConfig() ?? emptySyncConfig)
+  const [syncStatus, setSyncStatus] = useState<SyncStatusResponse>(
+    emptySyncStatus('Sync has not been configured. Offline mode is active.'),
+  )
+  const [syncPanelOpen, setSyncPanelOpen] = useState(false)
+  const [decisionPanelOpen, setDecisionPanelOpen] = useState(false)
+  const [syncBusy, setSyncBusy] = useState(false)
 
-  const normalizedLibraryPath = useMemo(
-    () => normalizeLibraryPath(nasConfig.libraryPath),
-    [nasConfig.libraryPath],
-  )
-  const resolvedStoragePath = useMemo(
-    () => buildResolvedStoragePath(nasConfig.remotePath, nasConfig.libraryPath),
-    [nasConfig.remotePath, nasConfig.libraryPath],
-  )
-  const webdavUrl = useMemo(() => buildWebdavUrl(nasConfig), [nasConfig])
-  const maskedWebdavUrl = useMemo(() => buildMaskedWebdavUrl(nasConfig), [nasConfig])
-  const derivedMountPoint = useMemo(() => buildMountPoint(nasConfig.remotePath), [nasConfig.remotePath])
   const runningInTauri = useMemo(() => isTauriRuntime(), [])
-
-  useEffect(() => {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(nasConfig))
-  }, [nasConfig])
-
-  useEffect(() => {
-    window.localStorage.setItem(MOUNT_STATE_KEY, JSON.stringify(mountState))
-  }, [mountState])
-
-  useEffect(() => {
-    window.localStorage.setItem(LIBRARY_OVERVIEW_KEY, JSON.stringify(libraryOverview))
-  }, [libraryOverview])
-
-  useEffect(() => {
-    window.localStorage.setItem(KNOWLEDGE_BASE_INDEX_KEY, JSON.stringify(knowledgeBaseIndex))
-  }, [knowledgeBaseIndex])
+  const hasUnsavedChanges = selectedNoteDocument ? editorBody !== lastSavedBody : false
+  const syncButtonTone = syncToneFromStatus(syncStatus, syncBusy)
+  const syncButtonLabel = buildSyncButtonLabel(syncStatus, syncBusy)
+  const selectedNote =
+    knowledgeBaseIndex.notes.find((note) => note.id === selectedNoteId) ??
+    knowledgeBaseIndex.notes[0] ??
+    null
 
   useEffect(() => {
     window.localStorage.setItem(SELECTED_NOTE_KEY, JSON.stringify(selectedNoteId))
   }, [selectedNoteId])
 
-  const handleConfigChange =
-    (field: keyof NasProfile) => (event: ChangeEvent<HTMLInputElement>) => {
-      setNasConfig((current) => ({
-        ...current,
-        [field]: event.target.value,
-      }))
+  useEffect(() => {
+    if (syncConfig) {
+      window.localStorage.setItem(SYNC_CONFIG_KEY, JSON.stringify(syncConfig))
+    } else {
+      window.localStorage.removeItem(SYNC_CONFIG_KEY)
     }
+  }, [syncConfig])
 
-  const handleProtocolChange = (protocol: NasProfile['protocol']) => {
-    setNasConfig((current) => ({
-      ...current,
-      protocol,
-    }))
-  }
-
-  const syncMountState = async (mode: 'check' | 'mount', withTransition = true) => {
-    const nextStatus: MountStatus = mode === 'mount' ? 'mounting' : 'checking'
-
-    if (!runningInTauri) {
-      setMountState({
-        status: 'failed',
-        mounted: false,
-        mountPoint: derivedMountPoint,
-        resolvedStoragePath,
-        webdavUrl,
-        profileName: nasConfig.profileName,
-        message:
-          mode === 'mount'
-            ? 'Reconnect needs the Tauri desktop runtime. This browser preview cannot call the macOS system WebDAV mount flow.'
-            : 'Check needs the Tauri desktop runtime. This browser preview cannot test the mounted path or native WebDAV mount.',
-      })
-      return
-    }
-
-    if (withTransition) {
-      setMountState((current) => ({
-        ...current,
-        status: nextStatus,
-        mounted: false,
-        message:
-          mode === 'mount'
-            ? 'Trying the system WebDAV mount flow on macOS.'
-            : 'Checking whether the mounted knowledge base path is reachable.',
-        mountPoint: derivedMountPoint,
-        resolvedStoragePath,
-        webdavUrl,
-        profileName: nasConfig.profileName,
-      }))
-    }
-
-    try {
-      const response = await invokeWithTimeout<MountResponse>(
-        mode === 'mount' ? 'attempt_webdav_mount' : 'check_mount_status',
-        {
-          profile: {
-            ...nasConfig,
-            remotePath: normalizeRemotePath(nasConfig.remotePath),
-            libraryPath: normalizedLibraryPath,
-          },
-        },
-      )
-
-      setMountState(response)
-    } catch (error) {
-      setMountState({
-        status: 'failed',
-        mounted: false,
-        mountPoint: derivedMountPoint,
-        resolvedStoragePath,
-        webdavUrl,
-        profileName: nasConfig.profileName,
-        message: error instanceof Error ? error.message : 'Failed to reach the Tauri mount command.',
-      })
-    }
-  }
-
-  const refreshLibraryOverview = async (profile: NasProfile = nasConfig) => {
+  const refreshLocalWorkspace = useCallback(async (rootPath: string) => {
     if (!runningInTauri) {
       setLibraryOverview({
-        resolvedStoragePath: buildResolvedStoragePath(profile.remotePath, profile.libraryPath),
+        resolvedStoragePath: BROWSER_LOCAL_PATH_PLACEHOLDER,
         exists: false,
         readable: false,
         directoryCount: 0,
         fileCount: 0,
         sampleEntries: [],
-        message: 'Directory inspection only works inside the Tauri desktop runtime.',
+        message: 'Browser preview detected. Offline path scanning runs in the Tauri desktop app.',
+      })
+      setKnowledgeBaseIndex({
+        rootPath: BROWSER_LOCAL_PATH_PLACEHOLDER,
+        notesRoot: `${BROWSER_LOCAL_PATH_PLACEHOLDER}/notes`,
+        assetsRoot: `${BROWSER_LOCAL_PATH_PLACEHOLDER}/assets`,
+        hiddenRoot: `${BROWSER_LOCAL_PATH_PLACEHOLDER}/.notebase`,
+        initializedNewKnowledgeBase: false,
+        notes: [],
+        message: 'Browser preview detected. Offline indexing runs in the Tauri desktop app.',
       })
       return
     }
 
-    try {
-      const response = await invokeWithTimeout<LibraryOverview>('inspect_knowledge_base', {
-        profile: {
-          ...profile,
-          remotePath: normalizeRemotePath(profile.remotePath),
-          libraryPath: normalizeLibraryPath(profile.libraryPath),
-        },
-      })
+    const [overviewResponse, indexResponse] = await Promise.all([
+      invokeWithTimeout<LibraryOverview>('inspect_library', { rootPath }),
+      invokeWithTimeout<KnowledgeBaseIndex>('load_library_index', { rootPath }),
+    ])
 
-      setLibraryOverview(response)
-    } catch (error) {
-      setLibraryOverview({
-        resolvedStoragePath: buildResolvedStoragePath(profile.remotePath, profile.libraryPath),
-        exists: false,
-        readable: false,
-        directoryCount: 0,
-        fileCount: 0,
-        sampleEntries: [],
-        message:
-          error instanceof Error
-            ? error.message
-            : 'Failed to inspect the current knowledge base directory.',
-      })
+    setLibraryOverview(overviewResponse)
+    setKnowledgeBaseIndex(indexResponse)
+    setSelectedNoteId((current) => {
+      if (current && indexResponse.notes.some((note) => note.id === current)) {
+        return current
+      }
+
+      return indexResponse.notes[0]?.id ?? null
+    })
+    if (indexResponse.notes.length === 0) {
+      setSelectedNoteDocument(null)
+      setEditorBody('')
+      setLastSavedBody('')
+      setSaveStatus('idle')
+      setSaveMessage('Select a note to start editing.')
     }
-  }
+  }, [runningInTauri])
 
-  const refreshNotesIndex = async (profile: NasProfile = nasConfig) => {
-    if (!runningInTauri) {
-      setKnowledgeBaseIndex({
-        rootPath: buildResolvedStoragePath(profile.remotePath, profile.libraryPath),
-        notesRoot: `${buildResolvedStoragePath(profile.remotePath, profile.libraryPath)}/notes`,
-        assetsRoot: `${buildResolvedStoragePath(profile.remotePath, profile.libraryPath)}/assets`,
-        hiddenRoot: `${buildResolvedStoragePath(profile.remotePath, profile.libraryPath)}/.notebase`,
-        initializedNewKnowledgeBase: false,
-        notes: [],
-        message: 'Note indexing only works inside the Tauri desktop runtime.',
-      })
-      return
-    }
-
-    try {
-      const response = await invokeWithTimeout<KnowledgeBaseIndex>('load_knowledge_base_index', {
-        profile: {
-          ...profile,
-          remotePath: normalizeRemotePath(profile.remotePath),
-          libraryPath: normalizeLibraryPath(profile.libraryPath),
-        },
-      })
-
-      setKnowledgeBaseIndex(response)
-      setSelectedNoteId((current) => {
-        if (current && response.notes.some((note) => note.id === current)) {
-          return current
-        }
-
-        return response.notes[0]?.id ?? null
-      })
-    } catch (error) {
-      setKnowledgeBaseIndex({
-        rootPath: buildResolvedStoragePath(profile.remotePath, profile.libraryPath),
-        notesRoot: `${buildResolvedStoragePath(profile.remotePath, profile.libraryPath)}/notes`,
-        assetsRoot: `${buildResolvedStoragePath(profile.remotePath, profile.libraryPath)}/assets`,
-        hiddenRoot: `${buildResolvedStoragePath(profile.remotePath, profile.libraryPath)}/.notebase`,
-        initializedNewKnowledgeBase: false,
-        notes: [],
-        message:
-          error instanceof Error
-            ? error.message
-            : 'Failed to load the current knowledge base note index.',
-      })
-    }
-  }
-
-  const loadSelectedNoteDocument = async (noteId: string, profile: NasProfile = nasConfig) => {
+  const loadSelectedNoteDocument = useCallback(async (noteId: string, rootPath: string) => {
     if (!runningInTauri) {
       setSelectedNoteDocument(null)
+      setEditorBody('')
+      setLastSavedBody('')
+      setSaveStatus('error')
+      setSaveMessage('Editing note content requires the Tauri desktop runtime.')
       return
     }
 
     try {
       const response = await invokeWithTimeout<NoteDocument>('load_note_document', {
-        profile: {
-          ...profile,
-          remotePath: normalizeRemotePath(profile.remotePath),
-          libraryPath: normalizeLibraryPath(profile.libraryPath),
-        },
+        rootPath,
         noteId,
       })
-
       setSelectedNoteDocument(response)
+      setEditorBody(response.body)
+      setLastSavedBody(response.body)
+      setSaveStatus('idle')
+      setSaveMessage(response.message)
     } catch (error) {
-      setSelectedNoteDocument({
-        note: {
-          id: noteId,
-          title: 'Unable to load note',
-          relativePath: noteId,
-          folder: 'unknown',
-          summary: error instanceof Error ? error.message : 'Failed to load the selected note.',
-          updatedAtMs: null,
-          tags: [],
-          format: 'markdown',
-        },
-        rawContent: '',
-        frontmatter: null,
-        body: '',
-        message:
-          error instanceof Error ? error.message : 'Failed to load the selected note content.',
-      })
+      const message =
+        error instanceof Error ? error.message : 'Failed to load the selected note content.'
+      setSelectedNoteDocument(null)
+      setEditorBody('')
+      setLastSavedBody('')
+      setSaveStatus('error')
+      setSaveMessage(message)
     }
+  }, [runningInTauri])
+
+  const assessSyncReadiness = useCallback(
+    async (rootPath: string, nextConfig: SyncConfig) => {
+      if (!runningInTauri) {
+        setSyncStatus(
+          emptySyncStatus(
+            'Browser preview detected. Sync checks only run inside the Tauri desktop runtime.',
+          ),
+        )
+        return
+      }
+
+      setSyncBusy(true)
+      try {
+        const response = await invokeWithTimeout<SyncStatusResponse>('prepare_sync', {
+          localRootPath: rootPath,
+          config: nextConfig,
+        })
+        setSyncStatus(response)
+        setDecisionPanelOpen(response.requiresInitialDecision)
+      } catch (error) {
+        setSyncStatus({
+          ...emptySyncStatus(
+            error instanceof Error ? error.message : 'Failed to inspect the remote sync target.',
+          ),
+          configured: true,
+          status: 'failed',
+          webdavUrl: '',
+        })
+      } finally {
+        setSyncBusy(false)
+      }
+    },
+    [runningInTauri],
+  )
+
+  useEffect(() => {
+    let cancelled = false
+
+    const initializeApp = async () => {
+      if (!runningInTauri) {
+        setLocalRootPath(BROWSER_LOCAL_PATH_PLACEHOLDER)
+        setLocalLibraryMessage(
+          'Browser preview detected. The desktop app will scan the default offline path on launch.',
+        )
+        return
+      }
+
+      try {
+        const response = await invokeWithTimeout<DefaultLocalLibraryResponse>(
+          'get_default_local_library',
+        )
+        if (cancelled) {
+          return
+        }
+
+        setLocalRootPath(response.rootPath)
+        setLocalLibraryMessage(response.message)
+        await refreshLocalWorkspace(response.rootPath)
+
+        if (syncConfig) {
+          await assessSyncReadiness(response.rootPath, syncConfig)
+        } else {
+          setSyncStatus(
+            emptySyncStatus(
+              'Offline library loaded. Configure sync only when you want to connect a NAS target.',
+            ),
+          )
+        }
+      } catch (error) {
+        if (!cancelled) {
+          const message =
+            error instanceof Error
+              ? error.message
+              : 'Failed to prepare the default local knowledge base path.'
+          setLocalLibraryMessage(message)
+          setSaveStatus('error')
+          setSaveMessage(message)
+        }
+      }
+    }
+
+    void initializeApp()
+
+    return () => {
+      cancelled = true
+    }
+  }, [assessSyncReadiness, refreshLocalWorkspace, runningInTauri, syncConfig])
+
+  useEffect(() => {
+    if (!selectedNoteId) {
+      return
+    }
+
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadSelectedNoteDocument(selectedNoteId, localRootPath)
+  }, [selectedNoteId, localRootPath, loadSelectedNoteDocument])
+
+  const handleEditorBodyChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+    const nextBody = event.target.value
+    setEditorBody(nextBody)
+
+    if (!selectedNoteDocument) {
+      setSaveStatus('idle')
+      setSaveMessage('Select a note to start editing.')
+      return
+    }
+
+    if (nextBody === lastSavedBody) {
+      setSaveStatus('idle')
+      setSaveMessage('No unsaved changes.')
+      return
+    }
+
+    setSaveStatus('dirty')
+    setSaveMessage('Unsaved markdown changes.')
+  }
+
+  const handleSaveNote = useCallback(
+    async (mode: 'manual' | 'autosave' = 'manual') => {
+      if (!selectedNoteId || !selectedNoteDocument) {
+        if (mode === 'manual') {
+          setSaveStatus('idle')
+          setSaveMessage('Select a note before saving.')
+        }
+        return
+      }
+
+      if (!runningInTauri) {
+        if (mode === 'manual') {
+          setSaveStatus('error')
+          setSaveMessage(
+            'Saving requires the Tauri desktop runtime. The browser preview cannot write files.',
+          )
+        }
+        return
+      }
+
+      if (!hasUnsavedChanges) {
+        if (mode === 'manual') {
+          setSaveStatus('saved')
+          setSaveMessage('No changes to save.')
+        }
+        return
+      }
+
+      setSaveStatus('saving')
+      setSaveMessage(
+        mode === 'autosave'
+          ? 'Autosaving note to the local offline library...'
+          : 'Saving note to the local offline library...',
+      )
+
+      try {
+        const response = await invokeWithTimeout<NoteDocument>('save_note_document', {
+          rootPath: localRootPath,
+          payload: {
+            noteId: selectedNoteId,
+            body: editorBody,
+          },
+        })
+        setSelectedNoteDocument(response)
+        setEditorBody(response.body)
+        setLastSavedBody(response.body)
+        setSaveStatus('saved')
+        setSaveMessage(
+          mode === 'autosave'
+            ? `Autosaved note content to ${response.note.relativePath}.`
+            : response.message,
+        )
+        await refreshLocalWorkspace(localRootPath)
+      } catch (error) {
+        setSaveStatus('error')
+        setSaveMessage(
+          error instanceof Error ? error.message : 'Failed to save the current note to disk.',
+        )
+      }
+    },
+    [
+      editorBody,
+      hasUnsavedChanges,
+      localRootPath,
+      refreshLocalWorkspace,
+      runningInTauri,
+      selectedNoteDocument,
+      selectedNoteId,
+    ],
+  )
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+        event.preventDefault()
+        void handleSaveNote('manual')
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [handleSaveNote])
+
+  useEffect(() => {
+    if (!selectedNoteId || !hasUnsavedChanges || saveStatus === 'saving') {
+      return
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void handleSaveNote('autosave')
+    }, 1500)
+
+    return () => {
+      window.clearTimeout(timeoutId)
+    }
+  }, [handleSaveNote, hasUnsavedChanges, saveStatus, selectedNoteId])
+
+  useEffect(() => {
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!hasUnsavedChanges) {
+        return
+      }
+
+      event.preventDefault()
+      event.returnValue = ''
+    }
+
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+    }
+  }, [hasUnsavedChanges])
+
+  const handleSelectNote = (noteId: string) => {
+    if (noteId === selectedNoteId) {
+      return
+    }
+
+    if (
+      hasUnsavedChanges &&
+      !window.confirm('You have unsaved changes in the current note. Switch notes anyway?')
+    ) {
+      return
+    }
+
+    setSelectedNoteId(noteId)
   }
 
   const handleCreateNote = async () => {
+    if (
+      hasUnsavedChanges &&
+      !window.confirm('You have unsaved changes in the current note. Create a new note anyway?')
+    ) {
+      return
+    }
+
     if (!runningInTauri) {
-      setMountState((current) => ({
-        ...current,
-        status: 'failed',
-        mounted: false,
-        message: 'Creating a note needs the Tauri desktop runtime. The browser preview cannot write files.',
-      }))
+      setSaveStatus('error')
+      setSaveMessage('Creating a note needs the Tauri desktop runtime. The browser preview cannot write files.')
       return
     }
 
     try {
       const response = await invokeWithTimeout<CreateNoteResponse>('create_note', {
-        profile: {
-          ...nasConfig,
-          remotePath: normalizeRemotePath(nasConfig.remotePath),
-          libraryPath: normalizedLibraryPath,
-        },
+        rootPath: localRootPath,
       })
-
+      await refreshLocalWorkspace(localRootPath)
       setSelectedNoteId(response.note.id)
-      await loadSelectedNoteDocument(response.note.id)
-      setMountState((current) => ({
-        ...current,
-        status: 'mounted',
-        mounted: true,
-        message: response.message,
-      }))
-      await Promise.all([refreshLibraryOverview(), refreshNotesIndex()])
+      setSaveStatus('saved')
+      setSaveMessage(response.message)
     } catch (error) {
-      setMountState((current) => ({
-        ...current,
-        status: 'failed',
-        mounted: false,
-        message:
-          error instanceof Error ? error.message : 'Failed to create a new note in the knowledge base.',
-      }))
+      setSaveStatus('error')
+      setSaveMessage(
+        error instanceof Error ? error.message : 'Failed to create a new note in the offline library.',
+      )
     }
   }
 
-  useEffect(() => {
-    let cancelled = false
-
-    const checkInitialMountState = async () => {
-      if (!runningInTauri) {
-        if (!cancelled) {
-          setMountState({
-            status: 'failed',
-            mounted: false,
-            mountPoint: derivedMountPoint,
-            resolvedStoragePath,
-            webdavUrl,
-            profileName: nasConfig.profileName,
-            message:
-              'Browser preview detected. Native mount checks are unavailable here; open the Tauri desktop window to test WebDAV.',
-          })
-        }
-        return
-      }
-
-      try {
-        const response = await invokeWithTimeout<MountResponse>('check_mount_status', {
-          profile: {
-            ...nasConfig,
-            remotePath: normalizeRemotePath(nasConfig.remotePath),
-            libraryPath: normalizedLibraryPath,
-          },
-        })
-
-        if (!cancelled) {
-          setMountState(response)
-          if (response.status === 'mounted' || response.status === 'degraded') {
-            void refreshLibraryOverview(nasConfig)
-          }
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setMountState({
-            status: 'failed',
-            mounted: false,
-            mountPoint: derivedMountPoint,
-            resolvedStoragePath,
-            webdavUrl,
-            profileName: nasConfig.profileName,
-            message:
-              error instanceof Error
-                ? error.message
-                : 'Failed to reach the Tauri mount command.',
-          })
-        }
-      }
+  const handleSyncConfigChange =
+    (field: keyof SyncConfig) => (event: ChangeEvent<HTMLInputElement>) => {
+      setDraftSyncConfig((current) => ({
+        ...current,
+        [field]: event.target.value,
+      }))
     }
 
-    void checkInitialMountState()
+  const handleProtocolChange = (protocol: SyncConfig['protocol']) => {
+    setDraftSyncConfig((current) => ({
+      ...current,
+      protocol,
+    }))
+  }
 
-    return () => {
-      cancelled = true
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  const handleConnectSync = async () => {
+    setSyncConfig(draftSyncConfig)
+    await assessSyncReadiness(localRootPath, draftSyncConfig)
+    setSyncPanelOpen(false)
+  }
 
-  useEffect(() => {
-    let cancelled = false
-
-    if (mountState.status === 'mounted' || mountState.status === 'degraded') {
-      const inspectCurrentLibrary = async () => {
-        try {
-          const [overviewResponse, indexResponse] = await Promise.all([
-            invokeWithTimeout<LibraryOverview>('inspect_knowledge_base', {
-              profile: {
-                ...nasConfig,
-                remotePath: normalizeRemotePath(nasConfig.remotePath),
-                libraryPath: normalizeLibraryPath(nasConfig.libraryPath),
-              },
-            }),
-            invokeWithTimeout<KnowledgeBaseIndex>('load_knowledge_base_index', {
-              profile: {
-                ...nasConfig,
-                remotePath: normalizeRemotePath(nasConfig.remotePath),
-                libraryPath: normalizeLibraryPath(nasConfig.libraryPath),
-              },
-            }),
-          ])
-
-          if (!cancelled) {
-            setLibraryOverview(overviewResponse)
-            setKnowledgeBaseIndex(indexResponse)
-            setSelectedNoteId((current) => {
-              if (current && indexResponse.notes.some((note) => note.id === current)) {
-                return current
-              }
-
-              return indexResponse.notes[0]?.id ?? null
-            })
-          }
-        } catch (error) {
-          if (!cancelled) {
-            setLibraryOverview({
-              resolvedStoragePath: buildResolvedStoragePath(
-                nasConfig.remotePath,
-                nasConfig.libraryPath,
-              ),
-              exists: false,
-              readable: false,
-              directoryCount: 0,
-              fileCount: 0,
-              sampleEntries: [],
-              message:
-                error instanceof Error
-                  ? error.message
-                  : 'Failed to inspect the current knowledge base directory.',
-            })
-            setKnowledgeBaseIndex({
-              rootPath: buildResolvedStoragePath(nasConfig.remotePath, nasConfig.libraryPath),
-              notesRoot: `${buildResolvedStoragePath(nasConfig.remotePath, nasConfig.libraryPath)}/notes`,
-              assetsRoot: `${buildResolvedStoragePath(nasConfig.remotePath, nasConfig.libraryPath)}/assets`,
-              hiddenRoot: `${buildResolvedStoragePath(nasConfig.remotePath, nasConfig.libraryPath)}/.notebase`,
-              initializedNewKnowledgeBase: false,
-              notes: [],
-              message:
-                error instanceof Error
-                  ? error.message
-                  : 'Failed to load the current knowledge base note index.',
-            })
-          }
-        }
-      }
-
-      void inspectCurrentLibrary()
-    }
-
-    return () => {
-      cancelled = true
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mountState.status, mountState.resolvedStoragePath])
-
-  useEffect(() => {
-    if (!selectedNoteId || mountState.status === 'failed' || mountState.status === 'checking' || mountState.status === 'mounting') {
-      setSelectedNoteDocument(null)
+  const handleRunSyncWithOptions = async (
+    direction = 'push_local_to_remote',
+    allowInitialOverride = false,
+  ) => {
+    if (!syncConfig) {
+      setSyncPanelOpen(true)
       return
     }
 
-    void loadSelectedNoteDocument(selectedNoteId)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedNoteId, mountState.status, mountState.resolvedStoragePath])
+    setSyncBusy(true)
+    try {
+      const response = await invokeWithTimeout<SyncStatusResponse>('sync_libraries', {
+        payload: {
+          localRootPath,
+          config: syncConfig,
+          direction,
+          allowInitialOverride,
+        },
+      })
+      setSyncStatus(response)
+      setDecisionPanelOpen(false)
+      await refreshLocalWorkspace(localRootPath)
+    } catch (error) {
+      setSyncStatus({
+        ...emptySyncStatus(
+          error instanceof Error ? error.message : 'Failed to run the requested sync action.',
+        ),
+        configured: true,
+        status: 'failed',
+      })
+    } finally {
+      setSyncBusy(false)
+    }
+  }
 
-  const statusTone = mountState.status
-  const isBusy = mountState.status === 'checking' || mountState.status === 'mounting'
-  const statusPath = mountState.resolvedStoragePath || resolvedStoragePath
-  const statusMountPoint = mountState.mountPoint || derivedMountPoint
-  const displayedLibraryOverview =
-    mountState.status === 'mounted' || mountState.status === 'degraded'
-      ? libraryOverview
-      : {
-          resolvedStoragePath: statusPath,
-          exists: false,
-          readable: false,
-          directoryCount: 0,
-          fileCount: 0,
-          sampleEntries: [],
-          message: 'Knowledge base directory inspection is waiting for a reachable mount.',
-        }
-  const displayedKnowledgeBaseIndex =
-    mountState.status === 'mounted' || mountState.status === 'degraded'
-      ? knowledgeBaseIndex
-      : {
-          rootPath: statusPath,
-          notesRoot: `${statusPath}/notes`,
-          assetsRoot: `${statusPath}/assets`,
-          hiddenRoot: `${statusPath}/.notebase`,
-          initializedNewKnowledgeBase: false,
-          notes: [],
-          message: 'Note indexing is waiting for a reachable knowledge base.',
-        }
-  const storageExplanation = [
-    {
-      label: 'Resolved storage target',
-      value: statusPath,
-      detail: 'This is the local knowledge base root the app will read after the NAS is mounted.',
-    },
-    {
-      label: 'Mount point',
-      value: statusMountPoint,
-      detail:
-        'This is the local macOS folder where WebDAV is expected to appear. It is derived from the last segment of the WebDAV path, and the system may still choose a slightly different final volume name.',
-    },
-    {
-      label: 'WebDAV target',
-      value: maskedWebdavUrl,
-      detail:
-        'This is the remote NAS address used for the native mount attempt. The password is masked in the UI.',
-    },
-  ]
-  const selectedNote =
-    displayedKnowledgeBaseIndex.notes.find((note) => note.id === selectedNoteId) ??
-    displayedKnowledgeBaseIndex.notes[0] ??
-    null
-  const selectedNoteBody = selectedNoteDocument?.body.trim() || 'No note body loaded yet.'
+  const handleResolveConflict = async (
+    relativePath: string,
+    resolution: 'keep_local' | 'keep_remote',
+  ) => {
+    if (!syncConfig) {
+      return
+    }
+
+    setSyncBusy(true)
+    try {
+      const response = await invokeWithTimeout<SyncStatusResponse>('resolve_sync_conflict', {
+        payload: {
+          localRootPath,
+          config: syncConfig,
+          relativePath,
+          resolution,
+        },
+      })
+      setSyncStatus(response)
+      await refreshLocalWorkspace(localRootPath)
+    } catch (error) {
+      setSyncStatus({
+        ...emptySyncStatus(
+          error instanceof Error ? error.message : 'Failed to resolve the selected conflict.',
+        ),
+        configured: true,
+        status: 'failed',
+      })
+    } finally {
+      setSyncBusy(false)
+    }
+  }
+
+  const handleSyncButtonClick = () => {
+    if (!syncConfig) {
+      setDraftSyncConfig(syncConfig ?? emptySyncConfig)
+      setSyncPanelOpen(true)
+      return
+    }
+
+    if (syncStatus.status === 'failed') {
+      setDraftSyncConfig(syncConfig)
+      setSyncPanelOpen(true)
+      return
+    }
+
+    void handleRunSyncWithOptions('push_local_to_remote', false)
+  }
+
+  const handleDisconnectSync = () => {
+    setSyncConfig(null)
+    setDraftSyncConfig(emptySyncConfig)
+    setSyncStatus(
+      emptySyncStatus(
+        'Remote sync configuration was removed. The app will continue scanning the local offline library.',
+      ),
+    )
+    setSyncPanelOpen(false)
+    setDecisionPanelOpen(false)
+  }
+
   const folderCounts = folders.map((folder) => ({
     ...folder,
-    count: displayedKnowledgeBaseIndex.notes.filter((note) =>
+    count: knowledgeBaseIndex.notes.filter((note) =>
       note.folder.toLowerCase().startsWith(folder.name.toLowerCase()),
     ).length,
   }))
@@ -753,20 +792,32 @@ function App() {
           <span className="traffic green" />
         </div>
         <div className="workspace-meta">
-          <p className="eyebrow">Personal knowledge base</p>
+          <p className="eyebrow">Local-first personal knowledge base</p>
           <h1>NoteBase</h1>
         </div>
         <label className="search-field" htmlFor="global-search">
           <span>Search notes, tags, links</span>
-          <input id="global-search" defaultValue="NAS + editor + backlinks" />
+          <input id="global-search" defaultValue="offline sync markdown" />
           <kbd>Cmd K</kbd>
         </label>
-        <div className={`status-panel status-panel-${statusTone}`}>
-          <span className={`status-dot status-dot-${statusTone}`} />
-          <div>
-            <p className="status-label">{statusLabels[mountState.status]}</p>
-            <strong>{mountState.profileName}</strong>
-            <span className="status-meta">{statusPath}</span>
+        <div className="topbar-actions">
+          <button
+            type="button"
+            className={`sync-entry sync-entry-${syncButtonTone}`}
+            onClick={handleSyncButtonClick}
+          >
+            <span className="sync-entry-icon" aria-hidden="true">
+              {syncButtonTone === 'warning' ? '!' : syncBusy ? '…' : '↻'}
+            </span>
+            <span>{syncButtonLabel}</span>
+          </button>
+          <div className="status-panel">
+            <span className="status-dot status-dot-mounted" />
+            <div>
+              <p className="status-label">Offline library</p>
+              <strong>Default local path</strong>
+              <span className="status-meta">{localRootPath}</span>
+            </div>
           </div>
         </div>
       </header>
@@ -781,15 +832,15 @@ function App() {
             <p className="section-label">Library</p>
             <button type="button" className="nav-item active">
               <span>All notes</span>
-              <strong>{displayedKnowledgeBaseIndex.notes.length}</strong>
+              <strong>{knowledgeBaseIndex.notes.length}</strong>
             </button>
             <button type="button" className="nav-item">
               <span>Recent</span>
-              <strong>12</strong>
+              <strong>{Math.min(knowledgeBaseIndex.notes.length, 12)}</strong>
             </button>
             <button type="button" className="nav-item">
-              <span>Favorites</span>
-              <strong>9</strong>
+              <span>Offline mode</span>
+              <strong>On</strong>
             </button>
           </section>
 
@@ -835,21 +886,25 @@ function App() {
           <div className="panel-heading">
             <div>
               <p className="section-label">Inbox</p>
-              <h2>Knowledge base notes</h2>
+              <h2>Offline knowledge base</h2>
             </div>
-            <button type="button" className="ghost-action" onClick={() => void refreshNotesIndex()}>
-              Refresh index
+            <button
+              type="button"
+              className="ghost-action"
+              onClick={() => void refreshLocalWorkspace(localRootPath)}
+            >
+              Refresh
             </button>
           </div>
 
           <div className="note-list">
-            {displayedKnowledgeBaseIndex.notes.length > 0 ? (
-              displayedKnowledgeBaseIndex.notes.map((note) => (
+            {knowledgeBaseIndex.notes.length > 0 ? (
+              knowledgeBaseIndex.notes.map((note) => (
                 <button
                   key={note.id}
                   type="button"
                   className={`note-card ${selectedNote?.id === note.id ? 'active' : ''}`}
-                  onClick={() => setSelectedNoteId(note.id)}
+                  onClick={() => handleSelectNote(note.id)}
                 >
                   <div className="note-card-top">
                     <strong>{note.title}</strong>
@@ -861,20 +916,18 @@ function App() {
             ) : (
               <div className="empty-note-state">
                 <strong>
-                  {displayedKnowledgeBaseIndex.initializedNewKnowledgeBase
-                    ? 'New knowledge base created'
+                  {knowledgeBaseIndex.initializedNewKnowledgeBase
+                    ? 'New local knowledge base created'
                     : 'No markdown notes yet'}
                 </strong>
-                <p>{displayedKnowledgeBaseIndex.message}</p>
+                <p>{knowledgeBaseIndex.message}</p>
                 <span>
-                  Notes should live under <code>{displayedKnowledgeBaseIndex.notesRoot}</code>.
+                  The app always scans the default offline path first: <code>{localRootPath}</code>.
                 </span>
-                {displayedKnowledgeBaseIndex.initializedNewKnowledgeBase ? (
-                  <span>
-                    This folder was empty, so NoteBase initialized a fresh knowledge base here. The
-                    next step is to create your first note.
-                  </span>
-                ) : null}
+                <span>
+                  If this folder started empty, NoteBase already initialized the local knowledge
+                  base shape for you.
+                </span>
               </div>
             )}
           </div>
@@ -886,15 +939,39 @@ function App() {
               <p className="section-label">Draft</p>
               <h2>{selectedNote?.title ?? 'No note selected'}</h2>
             </div>
-            <div className="view-switcher" role="tablist" aria-label="Editor mode">
-              <button type="button" className="view-pill active">
-                Markdown
-              </button>
-              <button type="button" className="view-pill">
-                Rich text
-              </button>
-              <button type="button" className="view-pill">
-                Preview
+            <div className="editor-actions">
+              <div className={`save-indicator save-indicator-${saveStatus}`}>
+                <strong>
+                  {saveStatus === 'saving'
+                    ? 'Saving'
+                    : saveStatus === 'saved'
+                      ? 'Saved'
+                      : saveStatus === 'dirty'
+                        ? 'Unsaved'
+                        : saveStatus === 'error'
+                          ? 'Save issue'
+                          : 'Ready'}
+                </strong>
+                <span>{saveMessage}</span>
+              </div>
+              <div className="view-switcher" role="tablist" aria-label="Editor mode">
+                <button type="button" className="view-pill active">
+                  Markdown
+                </button>
+                <button type="button" className="view-pill">
+                  Rich text
+                </button>
+                <button type="button" className="view-pill">
+                  Preview
+                </button>
+              </div>
+              <button
+                type="button"
+                className="save-action"
+                disabled={!selectedNote || saveStatus === 'saving' || !hasUnsavedChanges}
+                onClick={() => void handleSaveNote('manual')}
+              >
+                Save
               </button>
             </div>
           </div>
@@ -911,14 +988,14 @@ function App() {
             <article className="editor-surface">
               <p className="meta-line">
                 {selectedNote
-                  ? `${selectedNote.relativePath} • ${selectedNote.format} • storage target ${statusPath}`
-                  : `Knowledge base root • storage target ${statusPath}`}
+                  ? `${selectedNote.relativePath} • ${selectedNote.format} • local root ${localRootPath}`
+                  : `Offline knowledge base root • ${localRootPath}`}
               </p>
               <div className="writing-block">
                 {selectedNote ? (
                   <>
-                    <p>## Indexed note overview</p>
-                    <p>{selectedNoteDocument?.message ?? selectedNote.summary}</p>
+                    <p>## Offline editing flow</p>
+                    <p>{saveMessage || selectedNoteDocument?.message || selectedNote.summary}</p>
                     <p>- Relative path: {selectedNote.relativePath}</p>
                     <p>- Folder: {selectedNote.folder}</p>
                     <p>- Updated: {formatRelativeDate(selectedNote.updatedAtMs)}</p>
@@ -928,21 +1005,29 @@ function App() {
                     </p>
                     <p>### Storage model</p>
                     <p>
-                      Markdown files are the source of truth. Rich text stays as an editor-layer
-                      model, while images and attachments live under the assets directory and are
-                      referenced by indexable paths.
+                      The local offline library is the primary working copy. Sync only moves notes
+                      and assets between the local library and the remote target when you ask for it.
                     </p>
-                    <p>### Current markdown body</p>
-                    <pre className="note-body-preview">{selectedNoteBody}</pre>
+                    <div className="editor-caption-row">
+                      <p>### Markdown body</p>
+                      <span>{hasUnsavedChanges ? 'Cmd/Ctrl+S to save locally' : 'Saved locally'}</span>
+                    </div>
+                    <textarea
+                      className="markdown-editor"
+                      value={editorBody}
+                      onChange={handleEditorBodyChange}
+                      placeholder="Start writing in Markdown..."
+                      spellCheck={false}
+                    />
                   </>
                 ) : (
                   <>
-                    <p>## Knowledge base layout</p>
-                    <p>{displayedKnowledgeBaseIndex.message}</p>
-                    <p>- Knowledge base root: {displayedKnowledgeBaseIndex.rootPath}</p>
-                    <p>- Notes root: {displayedKnowledgeBaseIndex.notesRoot}</p>
-                    <p>- Assets root: {displayedKnowledgeBaseIndex.assetsRoot}</p>
-                    <p>- App metadata: {displayedKnowledgeBaseIndex.hiddenRoot}</p>
+                    <p>## Default offline path</p>
+                    <p>{localLibraryMessage}</p>
+                    <p>- Knowledge base root: {knowledgeBaseIndex.rootPath}</p>
+                    <p>- Notes root: {knowledgeBaseIndex.notesRoot}</p>
+                    <p>- Assets root: {knowledgeBaseIndex.assetsRoot}</p>
+                    <p>- App metadata: {knowledgeBaseIndex.hiddenRoot}</p>
                   </>
                 )}
               </div>
@@ -951,40 +1036,43 @@ function App() {
                   <span>ts</span>
                   <button type="button">Copy</button>
                 </div>
-                <pre>{`const knowledgeBase = {\n  rootPath: "${displayedKnowledgeBaseIndex.rootPath}",\n  notesRoot: "${displayedKnowledgeBaseIndex.notesRoot}",\n  assetsRoot: "${displayedKnowledgeBaseIndex.assetsRoot}",\n  hiddenRoot: "${displayedKnowledgeBaseIndex.hiddenRoot}",\n  indexedNotes: ${displayedKnowledgeBaseIndex.notes.length},\n  selectedNote: "${selectedNote?.relativePath ?? '(none)'}",\n}`}</pre>
+                <pre>{`const workspace = {\n  localRootPath: "${knowledgeBaseIndex.rootPath}",\n  notesRoot: "${knowledgeBaseIndex.notesRoot}",\n  assetsRoot: "${knowledgeBaseIndex.assetsRoot}",\n  syncConfigured: ${syncConfig ? 'true' : 'false'},\n  syncState: "${syncStatus.status}",\n  selectedNote: "${selectedNote?.relativePath ?? '(none)'}",\n}`}</pre>
               </div>
             </article>
 
             <aside className="preview-surface">
               <p className="section-label">Preview snapshot</p>
               <div className="preview-card">
-                <h3>Desktop MVP priorities</h3>
+                <h3>Default local behavior</h3>
                 <ul>
-                  <li>Fast local note creation</li>
-                  <li>Markdown and rich text in one workspace</li>
-                  <li>Backlinks and search that stay visible</li>
+                  <li>Open the offline library first</li>
+                  <li>Keep editing available even when the NAS is unavailable</li>
+                  <li>Use sync only when you intentionally connect a remote target</li>
                 </ul>
               </div>
-              <div className={`preview-card soft status-card status-card-${statusTone}`}>
-                <p className="section-label">Storage health</p>
-                <strong>{statusLabels[mountState.status]}</strong>
-                <span>{mountState.message}</span>
+              <div className={`preview-card soft sync-preview-card sync-preview-card-${syncButtonTone}`}>
+                <p className="section-label">Sync state</p>
+                <strong>{syncConfig ? syncConfig.profileName : 'Not configured'}</strong>
+                <span>{syncStatus.message}</span>
+                {syncStatus.conflictCount > 0 ? (
+                  <span>{syncStatus.conflictCount} conflicts need a manual decision before those files can sync.</span>
+                ) : null}
               </div>
               <div className="preview-card">
-                <p className="section-label">Knowledge base directory</p>
+                <p className="section-label">Offline library directory</p>
                 <strong>
-                  {displayedLibraryOverview.readable
-                    ? `${displayedLibraryOverview.directoryCount} folders • ${displayedLibraryOverview.fileCount} files`
+                  {libraryOverview.readable
+                    ? `${libraryOverview.directoryCount} folders • ${libraryOverview.fileCount} files`
                     : 'Directory unavailable'}
                 </strong>
-                <span>{displayedLibraryOverview.message}</span>
+                <span>{libraryOverview.message}</span>
               </div>
               <div className="preview-card">
                 <p className="section-label">Indexed markdown notes</p>
-                <strong>{displayedKnowledgeBaseIndex.notes.length}</strong>
-                <span>{displayedKnowledgeBaseIndex.message}</span>
-                {displayedKnowledgeBaseIndex.initializedNewKnowledgeBase ? (
-                  <span>A fresh knowledge base was initialized in this folder.</span>
+                <strong>{knowledgeBaseIndex.notes.length}</strong>
+                <span>{knowledgeBaseIndex.message}</span>
+                {knowledgeBaseIndex.initializedNewKnowledgeBase ? (
+                  <span>The app initialized a new offline library in the default path.</span>
                 ) : null}
               </div>
             </aside>
@@ -995,146 +1083,88 @@ function App() {
           <div className="panel-heading">
             <div>
               <p className="section-label">Context</p>
-              <h2>Linked knowledge</h2>
+              <h2>Local + sync overview</h2>
             </div>
-            <button type="button" className="ghost-action">
-              Expand
+            <button type="button" className="ghost-action" onClick={() => setSyncPanelOpen(true)}>
+              Sync settings
             </button>
           </div>
 
           <section className="inspector-section">
-            <div className="section-heading">
-              <p className="section-label">NAS connection</p>
-              <div className="inline-actions">
-                <button type="button" className="ghost-action" onClick={() => void syncMountState('check')}>
-                  Check
-                </button>
-                <button
-                  type="button"
-                  className="ghost-action"
-                  disabled={isBusy}
-                  onClick={() => void syncMountState('mount')}
-                >
-                  Reconnect
-                </button>
-              </div>
-            </div>
-            <div className="nas-config-card">
-              <div className="protocol-switcher" role="tablist" aria-label="WebDAV protocol">
-                <button
-                  type="button"
-                  className={`view-pill ${nasConfig.protocol === 'http' ? 'active' : ''}`}
-                  onClick={() => handleProtocolChange('http')}
-                >
-                  HTTP
-                </button>
-                <button
-                  type="button"
-                  className={`view-pill ${nasConfig.protocol === 'https' ? 'active' : ''}`}
-                  onClick={() => handleProtocolChange('https')}
-                >
-                  HTTPS
-                </button>
-              </div>
-
-              <div className="field-grid">
-                <label className="config-field">
-                  <span>Profile</span>
-                  <input
-                    value={nasConfig.profileName}
-                    onChange={handleConfigChange('profileName')}
-                  />
-                </label>
-                <label className="config-field">
-                  <span>Public IP</span>
-                  <input value={nasConfig.publicHost} onChange={handleConfigChange('publicHost')} />
-                </label>
-                <label className="config-field">
-                  <span>Port</span>
-                  <input value={nasConfig.publicPort} onChange={handleConfigChange('publicPort')} />
-                </label>
-                <label className="config-field">
-                  <span>Username</span>
-                  <input value={nasConfig.username} onChange={handleConfigChange('username')} />
-                </label>
-                <label className="config-field">
-                  <span>Password</span>
-                  <input
-                    type="password"
-                    value={nasConfig.password}
-                    onChange={handleConfigChange('password')}
-                  />
-                </label>
-                <label className="config-field full-span">
-                  <span>Remote WebDAV path</span>
-                  <input
-                    value={nasConfig.remotePath}
-                    onChange={handleConfigChange('remotePath')}
-                    placeholder="//home/data"
-                  />
-                </label>
-                <label className="config-field full-span">
-                  <span>Knowledge base path</span>
-                  <input
-                    value={nasConfig.libraryPath}
-                    onChange={handleConfigChange('libraryPath')}
-                  />
-                </label>
-                <div className="config-field full-span derived-field">
-                  <span>Derived mount point</span>
-                  <strong>{derivedMountPoint}</strong>
-                </div>
-              </div>
-
-              <div className="resolved-path-card">
-                {storageExplanation.map((item) => (
-                  <div key={item.label} className="storage-explanation-row">
-                    <p className="section-label">{item.label}</p>
-                    <strong>{item.value}</strong>
-                    <span>{item.detail}</span>
-                  </div>
-                ))}
-                <span>{mountState.message}</span>
-                {!runningInTauri ? (
-                  <span>
-                    You are viewing the Vite browser preview. Native WebDAV actions only work in the
-                    Tauri desktop runtime.
-                  </span>
-                ) : null}
+            <p className="section-label">Default offline path</p>
+            <div className="kb-directory-card">
+              <strong>{localRootPath}</strong>
+              <p>{localLibraryMessage}</p>
+              <div className="directory-stats">
+                <span>Notes root {knowledgeBaseIndex.notesRoot}</span>
+                <span>Assets root {knowledgeBaseIndex.assetsRoot}</span>
               </div>
             </div>
           </section>
 
           <section className="inspector-section">
             <div className="section-heading">
-              <p className="section-label">Knowledge base directory</p>
+              <p className="section-label">Remote sync</p>
               <button
                 type="button"
                 className="ghost-action"
-                disabled={mountState.status !== 'mounted' && mountState.status !== 'degraded'}
-                onClick={() => void refreshLibraryOverview()}
+                onClick={() => {
+                  if (syncConfig) {
+                    setDraftSyncConfig(syncConfig)
+                  }
+                  setSyncPanelOpen(true)
+                }}
               >
-                Refresh
+                {syncConfig ? 'Manage' : 'Configure'}
               </button>
             </div>
             <div className="kb-directory-card">
-              <strong>{displayedLibraryOverview.resolvedStoragePath}</strong>
-              <p>{displayedLibraryOverview.message}</p>
+              <strong>{syncConfig ? syncConfig.profileName : 'Remote sync not configured'}</strong>
+              <p>{syncStatus.message}</p>
               <div className="directory-stats">
-                <span>Folders {displayedLibraryOverview.directoryCount}</span>
-                <span>Files {displayedLibraryOverview.fileCount}</span>
+                <span>{syncStatus.mountPoint || 'No mount point yet'}</span>
+                <span>{syncStatus.remoteRootPath || 'No remote library path yet'}</span>
               </div>
-              <div className="stack-list compact">
-                {displayedLibraryOverview.sampleEntries.length > 0 ? (
-                  displayedLibraryOverview.sampleEntries.map((entry) => (
-                    <button key={entry} type="button" className="stack-item subtle">
-                      {entry}
-                    </button>
-                  ))
-                ) : (
-                  <div className="empty-directory-state">No sample entries yet.</div>
-                )}
-              </div>
+              {syncStatus.localSnapshot ? (
+                <div className="sync-snapshot-grid">
+                  <div className="sync-snapshot-card">
+                    <strong>Local</strong>
+                    <span>{syncStatus.localSnapshot.noteCount} notes</span>
+                    <span>{syncStatus.localSnapshot.assetFileCount} assets</span>
+                  </div>
+                  <div className="sync-snapshot-card">
+                    <strong>Remote</strong>
+                    <span>{syncStatus.remoteSnapshot?.noteCount ?? 0} notes</span>
+                    <span>{syncStatus.remoteSnapshot?.assetFileCount ?? 0} assets</span>
+                  </div>
+                </div>
+              ) : null}
+              {syncStatus.conflicts.length > 0 ? (
+                <div className="sync-conflict-list">
+                  <strong>Conflicts</strong>
+                  {syncStatus.conflicts.slice(0, 6).map((path) => (
+                    <div key={path} className="sync-conflict-item">
+                      <span>{path}</span>
+                      <div className="sync-conflict-actions">
+                        <button
+                          type="button"
+                          className="ghost-action"
+                          onClick={() => void handleResolveConflict(path, 'keep_local')}
+                        >
+                          Keep local
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-action"
+                          onClick={() => void handleResolveConflict(path, 'keep_remote')}
+                        >
+                          Keep remote
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </div>
           </section>
 
@@ -1144,27 +1174,26 @@ function App() {
               <button
                 type="button"
                 className="ghost-action"
-                disabled={mountState.status !== 'mounted' && mountState.status !== 'degraded'}
-                onClick={() => void refreshNotesIndex()}
+                onClick={() => void refreshLocalWorkspace(localRootPath)}
               >
                 Reindex
               </button>
             </div>
             <div className="kb-directory-card">
-              <strong>{displayedKnowledgeBaseIndex.notesRoot}</strong>
-              <p>{displayedKnowledgeBaseIndex.message}</p>
+              <strong>{knowledgeBaseIndex.notesRoot}</strong>
+              <p>{knowledgeBaseIndex.message}</p>
               <div className="directory-stats">
-                <span>Markdown notes {displayedKnowledgeBaseIndex.notes.length}</span>
-                <span>Assets root {displayedKnowledgeBaseIndex.assetsRoot}</span>
+                <span>Markdown notes {knowledgeBaseIndex.notes.length}</span>
+                <span>Assets root {knowledgeBaseIndex.assetsRoot}</span>
               </div>
               <div className="stack-list compact">
-                {displayedKnowledgeBaseIndex.notes.length > 0 ? (
-                  displayedKnowledgeBaseIndex.notes.slice(0, 6).map((note) => (
+                {knowledgeBaseIndex.notes.length > 0 ? (
+                  knowledgeBaseIndex.notes.slice(0, 6).map((note) => (
                     <button
                       key={note.id}
                       type="button"
                       className="stack-item subtle"
-                      onClick={() => setSelectedNoteId(note.id)}
+                      onClick={() => handleSelectNote(note.id)}
                     >
                       {note.relativePath}
                     </button>
@@ -1201,12 +1230,149 @@ function App() {
           <section className="inspector-section">
             <p className="section-label">Knowledge base shape</p>
             <div className="kb-card">
-              <strong>Stage 1</strong>
-              <p>Inbox + folders + tags + backlinks before graph and automation.</p>
+              <strong>Stage 2</strong>
+              <p>Offline-first notes with an optional remote sync target and a first-pass sync flow.</p>
             </div>
           </section>
         </aside>
       </main>
+
+      {syncPanelOpen ? (
+        <div className="modal-shell" role="presentation">
+          <div className="modal-card">
+            <div className="panel-heading">
+              <div>
+                <p className="section-label">Remote sync</p>
+                <h2>Configure optional NAS sync</h2>
+              </div>
+              <button type="button" className="ghost-action" onClick={() => setSyncPanelOpen(false)}>
+                Close
+              </button>
+            </div>
+            <p className="modal-copy">
+              NoteBase always starts from the default offline path. Only configure this section if
+              you want to sync the local library with a remote WebDAV target.
+            </p>
+            <div className="protocol-switcher" role="tablist" aria-label="WebDAV protocol">
+              <button
+                type="button"
+                className={`view-pill ${draftSyncConfig.protocol === 'http' ? 'active' : ''}`}
+                onClick={() => handleProtocolChange('http')}
+              >
+                HTTP
+              </button>
+              <button
+                type="button"
+                className={`view-pill ${draftSyncConfig.protocol === 'https' ? 'active' : ''}`}
+                onClick={() => handleProtocolChange('https')}
+              >
+                HTTPS
+              </button>
+            </div>
+            <div className="field-grid">
+              <label className="config-field">
+                <span>Profile</span>
+                <input value={draftSyncConfig.profileName} onChange={handleSyncConfigChange('profileName')} />
+              </label>
+              <label className="config-field">
+                <span>Public IP</span>
+                <input value={draftSyncConfig.publicHost} onChange={handleSyncConfigChange('publicHost')} />
+              </label>
+              <label className="config-field">
+                <span>Port</span>
+                <input value={draftSyncConfig.publicPort} onChange={handleSyncConfigChange('publicPort')} />
+              </label>
+              <label className="config-field">
+                <span>Username</span>
+                <input value={draftSyncConfig.username} onChange={handleSyncConfigChange('username')} />
+              </label>
+              <label className="config-field">
+                <span>Password</span>
+                <input
+                  type="password"
+                  value={draftSyncConfig.password}
+                  onChange={handleSyncConfigChange('password')}
+                />
+              </label>
+              <label className="config-field full-span">
+                <span>Remote WebDAV path</span>
+                <input
+                  value={draftSyncConfig.remotePath}
+                  onChange={handleSyncConfigChange('remotePath')}
+                  placeholder="//home/data"
+                />
+              </label>
+              <label className="config-field full-span">
+                <span>Remote knowledge base path</span>
+                <input
+                  value={draftSyncConfig.remoteLibraryPath}
+                  onChange={handleSyncConfigChange('remoteLibraryPath')}
+                  placeholder="NoteBase"
+                />
+              </label>
+            </div>
+            <div className="modal-actions">
+              {syncConfig ? (
+                <button type="button" className="ghost-danger" onClick={handleDisconnectSync}>
+                  Remove sync config
+                </button>
+              ) : (
+                <span className="modal-hint">Offline mode will continue even if you skip this.</span>
+              )}
+              <button type="button" className="save-action" onClick={() => void handleConnectSync()}>
+                Save and test connection
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {decisionPanelOpen && syncStatus.localSnapshot && syncStatus.remoteSnapshot ? (
+        <div className="modal-shell" role="presentation">
+          <div className="modal-card decision-card">
+            <div className="panel-heading">
+              <div>
+                <p className="section-label">First sync decision</p>
+                <h2>Choose how to align local and remote</h2>
+              </div>
+            </div>
+            <p className="modal-copy">
+              Both the local offline library and the remote sync target already contain content.
+              Choose which side should become the source for this sync step.
+            </p>
+            <div className="sync-choice-grid">
+              <button
+                type="button"
+                className="sync-choice-card"
+                onClick={() => void handleRunSyncWithOptions('pull_remote_to_local', true)}
+              >
+                <strong>Pull remote to local</strong>
+                <span>{syncStatus.remoteSnapshot.noteCount} remote notes</span>
+                <span>Use the remote library as the source.</span>
+              </button>
+              <button
+                type="button"
+                className="sync-choice-card"
+                onClick={() => void handleRunSyncWithOptions('push_local_to_remote', true)}
+              >
+                <strong>Push local to remote</strong>
+                <span>{syncStatus.localSnapshot.noteCount} local notes</span>
+                <span>Use the offline library as the source.</span>
+              </button>
+            </div>
+            <div className="modal-actions">
+              <span className="modal-hint">Suggested: {syncStatus.suggestedDirection}</span>
+              <button
+                type="button"
+                className="ghost-action"
+                onClick={() => setDecisionPanelOpen(false)}
+              >
+                Decide later
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }
