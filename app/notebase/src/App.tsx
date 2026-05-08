@@ -38,12 +38,6 @@ type MarkdownSnippetKind = 'h1' | 'h2' | 'bold' | 'list' | 'quote' | 'code' | 'l
 type AssetImportKind = 'image' | 'file'
 type PreviewBlockType = 'h1' | 'h2' | 'paragraph' | 'quote' | 'list' | 'checklist' | 'code'
 type PreviewBlock = { type: PreviewBlockType; content: string; language?: string }
-type ReferencedAsset = {
-  label: string
-  path: string
-  kind: AssetImportKind
-}
-
 type SyncConfig = {
   profileName: string
   protocol: 'http' | 'https'
@@ -715,40 +709,6 @@ const htmlToMarkdown = (html: string) => {
   return lines.join('\n\n').trimEnd()
 }
 
-const extractReferencedAssets = (body: string): ReferencedAsset[] => {
-  const pattern = /(!)?\[([^\]]*)\]\(([^)]+)\)/g
-  const assets: ReferencedAsset[] = []
-  const seen = new Set<string>()
-
-  for (const match of body.matchAll(pattern)) {
-    const isImage = Boolean(match[1])
-    const label = match[2]?.trim() || 'Attachment'
-    const rawPath = match[3]?.trim() || ''
-    if (
-      !rawPath ||
-      rawPath.startsWith('http://') ||
-      rawPath.startsWith('https://') ||
-      rawPath.startsWith('mailto:')
-    ) {
-      continue
-    }
-
-    const uniqueKey = `${isImage ? 'image' : 'file'}:${rawPath}`
-    if (seen.has(uniqueKey)) {
-      continue
-    }
-
-    seen.add(uniqueKey)
-    assets.push({
-      label,
-      path: rawPath,
-      kind: isImage ? 'image' : 'file',
-    })
-  }
-
-  return assets
-}
-
 const detectCodeFenceContext = (body: string, selectionStart: number, selectionEnd: number) => {
   const textBeforeSelection = body.slice(0, selectionStart)
   const openingFences = textBeforeSelection.match(/^```.*$/gm) ?? []
@@ -763,44 +723,6 @@ const detectCodeFenceContext = (body: string, selectionStart: number, selectionE
     lineStart,
     lineEnd,
   }
-}
-
-const joinPathSegments = (...segments: string[]) =>
-  segments
-    .filter(Boolean)
-    .join('/')
-    .replace(/\/+/g, '/')
-
-const dirnameOfPath = (path: string) => {
-  const normalized = path.replace(/\/+/g, '/').replace(/\/$/, '')
-  const lastSlashIndex = normalized.lastIndexOf('/')
-  if (lastSlashIndex <= 0) {
-    return ''
-  }
-  return normalized.slice(0, lastSlashIndex)
-}
-
-const resolveRelativeAssetPath = (basePath: string, relativePath: string) => {
-  if (!relativePath || relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-    return relativePath
-  }
-
-  const baseSegments = basePath.split('/').filter(Boolean)
-  const relativeSegments = relativePath.split('/').filter(Boolean)
-  const outputSegments = [...baseSegments]
-
-  for (const segment of relativeSegments) {
-    if (segment === '.') {
-      continue
-    }
-    if (segment === '..') {
-      outputSegments.pop()
-      continue
-    }
-    outputSegments.push(segment)
-  }
-
-  return `/${outputSegments.join('/')}`
 }
 
 const indentSelectedLines = (body: string, selectionStart: number, selectionEnd: number) => {
@@ -883,13 +805,15 @@ function App() {
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('notes')
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>('all')
   const [graphZoom, setGraphZoom] = useState(1)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [notebooksExpanded, setNotebooksExpanded] = useState(true)
   const [wikilinkDraft, setWikilinkDraft] = useState<WikilinkDraft | null>(null)
   const [wikilinkIndex, setWikilinkIndex] = useState(0)
   const [editorBody, setEditorBody] = useState('')
   const [lastSavedBody, setLastSavedBody] = useState('')
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
   const [saveMessage, setSaveMessage] = useState('Select a note to start editing.')
-  const [editorViewMode, setEditorViewMode] = useState<EditorViewMode>('markdown')
+  const [editorViewMode, setEditorViewMode] = useState<EditorViewMode>('rich-text')
   const [syncConfig, setSyncConfig] = useState<SyncConfig | null>(() => loadStoredSyncConfig())
   const [draftSyncConfig, setDraftSyncConfig] = useState<SyncConfig>(() => loadStoredSyncConfig() ?? emptySyncConfig)
   const [syncStatus, setSyncStatus] = useState<SyncStatusResponse>(
@@ -960,31 +884,6 @@ function App() {
   }, [editorViewMode, knowledgeBaseIndex.notes, selectedNoteId, wikilinkDraft, workspaceView])
   const editableTitle = useMemo(() => deriveEditableTitle(editorBody), [editorBody])
   const previewBlocks = useMemo(() => renderPreviewBlocks(editorBody), [editorBody])
-  const referencedAssets = useMemo(() => extractReferencedAssets(editorBody), [editorBody])
-  const noteAssetPreviewItems = useMemo(() => {
-    if (!selectedNote) {
-      return []
-    }
-
-    const noteRootRelativePath = joinPathSegments('notes', selectedNote.relativePath)
-    const noteDirectoryRelativePath = dirnameOfPath(noteRootRelativePath)
-
-    return referencedAssets.map((asset) => {
-      const resolvedRootRelativePath = resolveRelativeAssetPath(noteDirectoryRelativePath, asset.path)
-      const absolutePath = resolvedRootRelativePath
-        ? joinPathSegments(localRootPath, resolvedRootRelativePath)
-        : ''
-
-      return {
-        ...asset,
-        absolutePath,
-        previewUrl:
-          runningInTauri && asset.kind === 'image' && absolutePath
-            ? convertFileSrc(absolutePath)
-            : null,
-      }
-    })
-  }, [localRootPath, referencedAssets, runningInTauri, selectedNote])
   const [assetPickerKind, setAssetPickerKind] = useState<AssetImportKind>('image')
   const libraryTags = useMemo(() => collectLibraryTags(knowledgeBaseIndex.notes), [knowledgeBaseIndex.notes])
   const noteConnectionsStatusMessage = !selectedNote
@@ -1653,43 +1552,6 @@ function App() {
       syncMarkdownFromRichTextEditor,
     ],
   )
-
-  const handleEditorDragOver = (event: React.DragEvent<HTMLTextAreaElement>) => {
-    if (editorViewMode !== 'markdown' || !selectedNote) {
-      return
-    }
-
-    event.preventDefault()
-    setIsDragActive(true)
-  }
-
-  const handleEditorDragLeave = (event: React.DragEvent<HTMLTextAreaElement>) => {
-    if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
-      return
-    }
-
-    setIsDragActive(false)
-  }
-
-  const handleEditorDrop = async (event: React.DragEvent<HTMLTextAreaElement>) => {
-    if (editorViewMode !== 'markdown' || !selectedNote) {
-      return
-    }
-
-    event.preventDefault()
-    setIsDragActive(false)
-
-    const files = Array.from(event.dataTransfer.files)
-    if (files.length === 0) {
-      return
-    }
-
-    pendingSelectionRef.current = {
-      start: event.currentTarget.selectionStart,
-      end: event.currentTarget.selectionEnd,
-    }
-    await importAssetFiles(files)
-  }
 
   const handleRichTextInput = () => {
     syncMarkdownFromRichTextEditor()
@@ -2431,24 +2293,28 @@ function App() {
   return (
     <div className="app-shell">
       <div className="workspace-shell">
-        <aside className="sidebar shell-sidebar">
+        <aside className={`sidebar shell-sidebar ${sidebarCollapsed ? 'shell-sidebar-collapsed' : ''}`}>
           <div className="shell-sidebar-top">
-            <div className="traffic-lights" aria-hidden="true">
-              <span className="traffic red" />
-              <span className="traffic yellow" />
-              <span className="traffic green" />
-            </div>
-
             <div className="sidebar-brand">
               <div className="sidebar-brand-mark">N</div>
-              <div className="workspace-meta">
-                <h1>NoteBase</h1>
-                <p>Personal Vault</p>
-              </div>
+              {!sidebarCollapsed ? (
+                <div className="workspace-meta">
+                  <h1>NoteBase</h1>
+                  <p>Personal Vault</p>
+                </div>
+              ) : null}
+              <button
+                type="button"
+                className="sidebar-collapse-toggle"
+                onClick={() => setSidebarCollapsed((current) => !current)}
+                aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              >
+                {sidebarCollapsed ? '›' : '‹'}
+              </button>
             </div>
 
             <button type="button" className="primary-action" onClick={() => void handleCreateNote()}>
-              + New note
+              {sidebarCollapsed ? '+' : '+ New note'}
             </button>
 
             <nav className="nav-section shell-nav-section" aria-label="Primary navigation">
@@ -2457,71 +2323,83 @@ function App() {
                 className={`nav-item ${workspaceView === 'notes' ? 'active' : ''}`}
                 onClick={() => navigateToView('notes')}
               >
-                <span>Inbox</span>
-                <strong>{knowledgeBaseIndex.notes.length}</strong>
+                <span>{sidebarCollapsed ? 'I' : 'Inbox'}</span>
+                {!sidebarCollapsed ? <strong>{knowledgeBaseIndex.notes.length}</strong> : null}
               </button>
               <button type="button" className="nav-item">
-                <span>Today</span>
+                <span>{sidebarCollapsed ? 'T' : 'Today'}</span>
               </button>
               <button type="button" className="nav-item">
-                <span>Favorites</span>
+                <span>{sidebarCollapsed ? 'F' : 'Favorites'}</span>
               </button>
               <button type="button" className="nav-item">
-                <span>Tags</span>
+                <span>{sidebarCollapsed ? '#' : 'Tags'}</span>
               </button>
               <button
                 type="button"
                 className={`nav-item ${workspaceView === 'graph' ? 'active' : ''}`}
                 onClick={() => navigateToView('graph')}
               >
-                <span>Graph</span>
+                <span>{sidebarCollapsed ? 'G' : 'Graph'}</span>
               </button>
               <button
                 type="button"
                 className={`nav-item ${workspaceView === 'media' ? 'active' : ''}`}
                 onClick={() => navigateToView('media')}
               >
-                <span>Media</span>
+                <span>{sidebarCollapsed ? 'M' : 'Media'}</span>
               </button>
             </nav>
 
             <section className="nav-section notebook-nav-section">
-              <div className="section-heading">
-                <p className="section-label">Notebooks</p>
-                <button type="button" className="ghost-action">
-                  Manage
-                </button>
-              </div>
-              <div className="stack-list notebook-stack-list">
-                {folderCounts.map((folder) => (
-                  <button
-                    key={folder.name}
-                    type="button"
-                    className={`stack-item ${folder.active ? 'selected' : ''}`}
-                  >
-                    <span>{folder.name}</span>
-                    <strong>{folder.count}</strong>
-                  </button>
-                ))}
-              </div>
+              {!sidebarCollapsed ? (
+                <>
+                  <div className="section-heading">
+                    <button
+                      type="button"
+                      className="section-toggle"
+                      onClick={() => setNotebooksExpanded((current) => !current)}
+                    >
+                      <p className="section-label">Notebooks</p>
+                      <span>{notebooksExpanded ? '−' : '+'}</span>
+                    </button>
+                  </div>
+                  {notebooksExpanded ? (
+                    <div className="stack-list notebook-stack-list">
+                      {folderCounts.map((folder) => (
+                        <button
+                          key={folder.name}
+                          type="button"
+                          className={`stack-item ${folder.active ? 'selected' : ''}`}
+                        >
+                          <span>{folder.name}</span>
+                          <strong>{folder.count}</strong>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
             </section>
           </div>
 
           <div className="shell-sidebar-bottom">
             <button type="button" className="nav-item">
-              <span>Settings</span>
+              <span>{sidebarCollapsed ? 'S' : 'Settings'}</span>
             </button>
             <button type="button" className="nav-item">
-              <span>Trash</span>
+              <span>{sidebarCollapsed ? 'T' : 'Trash'}</span>
             </button>
-            <div className="sidebar-user-row">
+            <div className={`sidebar-user-row ${sidebarCollapsed ? 'sidebar-user-row-collapsed' : ''}`}>
               <div className="sidebar-user-avatar" aria-hidden="true">
                 N
               </div>
-              <div>
-                <strong>Local-first</strong>
-                <span>{localRootPath}</span>
-              </div>
+              {!sidebarCollapsed ? (
+                <div>
+                  <strong>Local-first</strong>
+                  <span>{`${libraryOverview.fileCount} files • ${localRootPath}`}</span>
+                </div>
+              ) : null}
             </div>
           </div>
         </aside>
@@ -2660,8 +2538,7 @@ function App() {
 
               <section className="editor-panel">
                 <div className="editor-header">
-                  <div>
-                    <p className="section-label">Draft</p>
+                  <div className="editor-header-main">
                     {selectedNote ? (
                       <input
                         className="editor-title-input"
@@ -2672,9 +2549,23 @@ function App() {
                     ) : (
                       <h2>No note selected</h2>
                     )}
+                    {selectedNote ? (
+                      <div className="editor-meta-strip">
+                        <span>{formatRelativeDate(selectedNote.updatedAtMs)}</span>
+                        <span>{selectedNote.relativePath}</span>
+                        {selectedNote.tags.slice(0, 3).map((tag) => (
+                          <span key={tag} className="editor-meta-tag">
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
                   <div className="editor-actions">
-                    <div className={`save-indicator save-indicator-${saveStatus}`}>
+                    <div
+                      className={`save-indicator save-indicator-compact save-indicator-${saveStatus}`}
+                      title={saveMessage}
+                    >
                       <strong>
                         {saveStatus === 'saving'
                           ? 'Saving'
@@ -2686,29 +2577,16 @@ function App() {
                                 ? 'Save issue'
                                 : 'Ready'}
                       </strong>
-                      <span>{saveMessage}</span>
                     </div>
-                    <div className="view-switcher" role="tablist" aria-label="Editor mode">
-                      <button
-                        type="button"
-                        className={`view-pill ${editorViewMode === 'markdown' ? 'active' : ''}`}
-                        onClick={() => setEditorViewMode('markdown')}
-                      >
-                        Markdown
-                      </button>
-                      <button
-                        type="button"
-                        className={`view-pill ${editorViewMode === 'rich-text' ? 'active' : ''}`}
-                        onClick={() => setEditorViewMode('rich-text')}
-                      >
-                        Rich text
-                      </button>
+                    <div className="view-switcher view-switcher-compact" role="tablist" aria-label="Editor mode">
                       <button
                         type="button"
                         className={`view-pill ${editorViewMode === 'preview' ? 'active' : ''}`}
-                        onClick={() => setEditorViewMode('preview')}
+                        onClick={() =>
+                          setEditorViewMode((current) => (current === 'preview' ? 'rich-text' : 'preview'))
+                        }
                       >
-                        Preview
+                        {editorViewMode === 'preview' ? 'Write' : 'Preview'}
                       </button>
                     </div>
                     <button
@@ -2750,7 +2628,6 @@ function App() {
                       }}
                     >
                       <span>{tool.label}</span>
-                      <kbd>{tool.shortcut}</kbd>
                     </button>
                   ))}
                 </div>
@@ -2790,238 +2667,148 @@ function App() {
                 />
 
                 <div className="editor-body">
-                  <article className="editor-surface">
-                    <p className="meta-line">
-                      {selectedNote
-                        ? `${selectedNote.relativePath} • ${selectedNote.format} • local root ${localRootPath}`
-                        : `Offline knowledge base root • ${localRootPath}`}
-                    </p>
-                    <div className="writing-block">
-                      {selectedNote ? (
-                        <>
-                          <p>## Offline editing flow</p>
-                          <p>{saveMessage || selectedNoteDocument?.message || selectedNote.summary}</p>
-                          <p>- Relative path: {selectedNote.relativePath}</p>
-                          <p>- Folder: {selectedNote.folder}</p>
-                          <p>- Updated: {formatRelativeDate(selectedNote.updatedAtMs)}</p>
-                          <p>
-                            - Tags:{' '}
-                            {selectedNote.tags.length > 0 ? selectedNote.tags.join(', ') : 'No tags yet'}
-                          </p>
-                          <p>### Storage model</p>
-                          <p>
-                            The local offline library is the primary working copy. Sync only moves notes
-                            and assets between the local library and the remote target when you ask for it.
-                          </p>
-                          <div className="editor-caption-row">
-                            <p>
-                              {editorViewMode === 'preview'
-                                ? '### Markdown preview'
-                                : editorViewMode === 'rich-text'
-                                  ? '### Rich text mode'
-                                  : '### Markdown body'}
-                            </p>
-                            <span>
-                              {editorViewMode === 'preview'
-                                ? 'Preview updates from the current local draft'
-                                : hasUnsavedChanges
-                                  ? 'Cmd/Ctrl+S to save locally'
-                                  : 'Saved locally'}
-                            </span>
-                          </div>
-                          {editorViewMode === 'preview' ? (
-                            <div className="markdown-preview">
-                              {previewBlocks.length > 0 ? (
-                                previewBlocks.map((block, index) => {
-                                  if (block.type === 'h1') {
-                                    return <h1 key={`${block.type}-${index}`}>{renderInlinePreview(block.content)}</h1>
-                                  }
-                                  if (block.type === 'h2') {
-                                    return <h2 key={`${block.type}-${index}`}>{renderInlinePreview(block.content)}</h2>
-                                  }
-                                  if (block.type === 'quote') {
-                                    return (
-                                      <blockquote key={`${block.type}-${index}`}>
-                                        {renderInlinePreview(block.content)}
-                                      </blockquote>
-                                    )
-                                  }
-                                  if (block.type === 'list') {
-                                    return (
-                                      <ul key={`${block.type}-${index}`}>
-                                        {block.content.split('\n').map((item) => (
-                                          <li key={item}>{renderInlinePreview(item)}</li>
-                                        ))}
-                                      </ul>
-                                    )
-                                  }
-                                  if (block.type === 'checklist') {
-                                    return (
-                                      <ul key={`${block.type}-${index}`} className="preview-checklist">
-                                        {block.content.split('\n').map((item) => {
-                                          const [checkedFlag, label] = item.split('|')
-                                          return (
-                                            <li key={item}>
-                                              <input type="checkbox" checked={checkedFlag === '1'} readOnly />
-                                              <span>{renderInlinePreview(label)}</span>
-                                            </li>
-                                          )
-                                        })}
-                                      </ul>
-                                    )
-                                  }
-                                  if (block.type === 'code') {
-                                    return (
-                                      <div key={`${block.type}-${index}`} className="preview-code-block">
-                                        <div className="preview-code-header">
-                                          <span>{block.language || 'plain text'}</span>
-                                          <button
-                                            type="button"
-                                            className="ghost-action"
-                                            onClick={() => void handleCopyText(block.content, 'code block')}
-                                          >
-                                            Copy
-                                          </button>
-                                        </div>
-                                        <pre>{block.content}</pre>
-                                      </div>
-                                    )
-                                  }
-                                  return <p key={`${block.type}-${index}`}>{renderInlinePreview(block.content)}</p>
-                                })
-                              ) : (
-                                <p className="preview-empty">Nothing to preview yet.</p>
-                              )}
-                            </div>
-                          ) : editorViewMode === 'rich-text' ? (
-                            <div
-                              ref={richTextEditorRef}
-                              className={`rich-text-editor ${isDragActive ? 'drag-active' : ''}`}
-                              contentEditable
-                              suppressContentEditableWarning
-                              onInput={handleRichTextInput}
-                              onKeyDown={handleRichTextKeyDown}
-                              onDragOver={handleRichTextDragOver}
-                              onDragLeave={handleRichTextDragLeave}
-                              onDrop={(event) => void handleRichTextDrop(event)}
-                            />
-                          ) : (
-                            <div className="markdown-editor-stack">
-                              <textarea
-                                ref={editorTextareaRef}
-                                className={`markdown-editor ${isDragActive ? 'drag-active' : ''}`}
-                                value={editorBody}
-                                onChange={handleEditorBodyChange}
-                                onKeyDown={handleEditorKeyDown}
-                                onClick={(event) =>
-                                  syncWikilinkDraft(
-                                    event.currentTarget.value,
-                                    event.currentTarget.selectionStart,
-                                    event.currentTarget.selectionEnd,
-                                  )
-                                }
-                                onKeyUp={(event) =>
-                                  syncWikilinkDraft(
-                                    event.currentTarget.value,
-                                    event.currentTarget.selectionStart,
-                                    event.currentTarget.selectionEnd,
-                                  )
-                                }
-                                onDragOver={handleEditorDragOver}
-                                onDragLeave={handleEditorDragLeave}
-                                onDrop={(event) => void handleEditorDrop(event)}
-                                placeholder="Start writing in Markdown..."
-                                spellCheck={false}
-                              />
-                              {wikilinkDraft && wikilinkSuggestions.length > 0 ? (
-                                <div className="wikilink-card">
-                                  <div className="wikilink-card-header">
-                                    <strong>Link a note</strong>
-                                    <span>
-                                      {wikilinkDraft.query
-                                        ? `Matches for "${wikilinkDraft.query}"`
-                                        : 'Type to narrow the local note list'}
-                                    </span>
-                                  </div>
-                                  <div className="wikilink-list">
-                                    {wikilinkSuggestions.map((note, index) => (
-                                      <button
-                                        key={note.id}
-                                        type="button"
-                                        className={`wikilink-item ${index === wikilinkIndex ? 'active' : ''}`}
-                                        onMouseEnter={() => setWikilinkIndex(index)}
-                                        onMouseDown={(event) => {
-                                          event.preventDefault()
-                                          insertWikilinkSuggestion(note)
-                                        }}
-                                      >
-                                        <strong>{note.title}</strong>
-                                        <span>{note.relativePath}</span>
-                                      </button>
+                  <article className="editor-surface editor-surface-writing">
+                    {selectedNote ? (
+                      editorViewMode === 'preview' ? (
+                        <div className="markdown-preview">
+                          {previewBlocks.length > 0 ? (
+                            previewBlocks.map((block, index) => {
+                              if (block.type === 'h1') {
+                                return <h1 key={`${block.type}-${index}`}>{renderInlinePreview(block.content)}</h1>
+                              }
+                              if (block.type === 'h2') {
+                                return <h2 key={`${block.type}-${index}`}>{renderInlinePreview(block.content)}</h2>
+                              }
+                              if (block.type === 'quote') {
+                                return (
+                                  <blockquote key={`${block.type}-${index}`}>
+                                    {renderInlinePreview(block.content)}
+                                  </blockquote>
+                                )
+                              }
+                              if (block.type === 'list') {
+                                return (
+                                  <ul key={`${block.type}-${index}`}>
+                                    {block.content.split('\n').map((item) => (
+                                      <li key={item}>{renderInlinePreview(item)}</li>
                                     ))}
+                                  </ul>
+                                )
+                              }
+                              if (block.type === 'checklist') {
+                                return (
+                                  <ul key={`${block.type}-${index}`} className="preview-checklist">
+                                    {block.content.split('\n').map((item) => {
+                                      const [checkedFlag, label] = item.split('|')
+                                      return (
+                                        <li key={item}>
+                                          <input type="checkbox" checked={checkedFlag === '1'} readOnly />
+                                          <span>{renderInlinePreview(label)}</span>
+                                        </li>
+                                      )
+                                    })}
+                                  </ul>
+                                )
+                              }
+                              if (block.type === 'code') {
+                                return (
+                                  <div key={`${block.type}-${index}`} className="preview-code-block">
+                                    <div className="preview-code-header">
+                                      <span>{block.language || 'plain text'}</span>
+                                      <button
+                                        type="button"
+                                        className="ghost-action"
+                                        onClick={() => void handleCopyText(block.content, 'code block')}
+                                      >
+                                        Copy
+                                      </button>
+                                    </div>
+                                    <pre>{block.content}</pre>
                                   </div>
-                                  <p className="wikilink-footnote">Enter or Tab inserts the selected note.</p>
-                                </div>
-                              ) : null}
-                            </div>
+                                )
+                              }
+                              return <p key={`${block.type}-${index}`}>{renderInlinePreview(block.content)}</p>
+                            })
+                          ) : (
+                            <p className="preview-empty">Nothing to preview yet.</p>
                           )}
-                        </>
+                        </div>
                       ) : (
-                        <>
-                          <p>## Default offline path</p>
-                          <p>{localLibraryMessage}</p>
-                          <p>- Knowledge base root: {knowledgeBaseIndex.rootPath}</p>
-                          <p>- Notes root: {knowledgeBaseIndex.notesRoot}</p>
-                          <p>- Assets root: {knowledgeBaseIndex.assetsRoot}</p>
-                          <p>- App metadata: {knowledgeBaseIndex.hiddenRoot}</p>
-                        </>
-                      )}
-                    </div>
-                    <div className="code-block">
-                      <div className="code-block-top">
-                        <span>ts</span>
-                        <button type="button">Copy</button>
+                        <div className="writer-stack">
+                          <div
+                            ref={richTextEditorRef}
+                            className={`rich-text-editor rich-text-editor-writing ${isDragActive ? 'drag-active' : ''}`}
+                            contentEditable
+                            suppressContentEditableWarning
+                            onInput={handleRichTextInput}
+                            onKeyDown={handleRichTextKeyDown}
+                            onDragOver={handleRichTextDragOver}
+                            onDragLeave={handleRichTextDragLeave}
+                            onDrop={(event) => void handleRichTextDrop(event)}
+                          />
+                          <textarea
+                            ref={editorTextareaRef}
+                            className="markdown-editor-assist"
+                            value={editorBody}
+                            onChange={handleEditorBodyChange}
+                            onKeyDown={handleEditorKeyDown}
+                            onClick={(event) =>
+                              syncWikilinkDraft(
+                                event.currentTarget.value,
+                                event.currentTarget.selectionStart,
+                                event.currentTarget.selectionEnd,
+                              )
+                            }
+                            onKeyUp={(event) =>
+                              syncWikilinkDraft(
+                                event.currentTarget.value,
+                                event.currentTarget.selectionStart,
+                                event.currentTarget.selectionEnd,
+                              )
+                            }
+                            spellCheck={false}
+                            aria-hidden="true"
+                            tabIndex={-1}
+                          />
+                          {wikilinkDraft && wikilinkSuggestions.length > 0 ? (
+                            <div className="wikilink-card">
+                              <div className="wikilink-card-header">
+                                <strong>Link a note</strong>
+                                <span>
+                                  {wikilinkDraft.query
+                                    ? `Matches for "${wikilinkDraft.query}"`
+                                    : 'Type to narrow the local note list'}
+                                </span>
+                              </div>
+                              <div className="wikilink-list">
+                                {wikilinkSuggestions.map((note, index) => (
+                                  <button
+                                    key={note.id}
+                                    type="button"
+                                    className={`wikilink-item ${index === wikilinkIndex ? 'active' : ''}`}
+                                    onMouseEnter={() => setWikilinkIndex(index)}
+                                    onMouseDown={(event) => {
+                                      event.preventDefault()
+                                      insertWikilinkSuggestion(note)
+                                    }}
+                                  >
+                                    <strong>{note.title}</strong>
+                                    <span>{note.relativePath}</span>
+                                  </button>
+                                ))}
+                              </div>
+                              <p className="wikilink-footnote">Enter or Tab inserts the selected note.</p>
+                            </div>
+                          ) : null}
+                        </div>
+                      )
+                    ) : (
+                      <div className="editor-empty-state">
+                        <strong>No note selected</strong>
+                        <p>{localLibraryMessage}</p>
                       </div>
-                      <pre>{`const workspace = {\n  localRootPath: "${knowledgeBaseIndex.rootPath}",\n  notesRoot: "${knowledgeBaseIndex.notesRoot}",\n  assetsRoot: "${knowledgeBaseIndex.assetsRoot}",\n  syncConfigured: ${syncConfig ? 'true' : 'false'},\n  syncState: "${syncStatus.status}",\n  selectedNote: "${selectedNote?.relativePath ?? '(none)'}",\n}`}</pre>
-                    </div>
+                    )}
                   </article>
-
-                  <aside className="preview-surface">
-                    <p className="section-label">Preview snapshot</p>
-                    <div className="preview-card">
-                      <h3>Default local behavior</h3>
-                      <ul>
-                        <li>Open the offline library first</li>
-                        <li>Keep editing available even when the NAS is unavailable</li>
-                        <li>Use sync only when you intentionally connect a remote target</li>
-                      </ul>
-                    </div>
-                    <div className={`preview-card soft sync-preview-card sync-preview-card-${syncButtonTone}`}>
-                      <p className="section-label">Sync state</p>
-                      <strong>{syncConfig ? syncConfig.profileName : 'Not configured'}</strong>
-                      <span>{syncStatus.message}</span>
-                    </div>
-                    <div className="preview-card">
-                      <p className="section-label">Offline library directory</p>
-                      <strong>
-                        {libraryOverview.readable
-                          ? `${libraryOverview.directoryCount} folders • ${libraryOverview.fileCount} files`
-                          : 'Directory unavailable'}
-                      </strong>
-                      <span>{libraryOverview.message}</span>
-                    </div>
-                    <div className="preview-card">
-                      <p className="section-label">Note assets</p>
-                      <strong>
-                        {selectedNote ? `${noteAssetPreviewItems.length} linked assets` : 'No note selected'}
-                      </strong>
-                      <span>
-                        {selectedNote
-                          ? 'Drag files into the editor or use the toolbar to import them.'
-                          : 'Select a note to inspect its linked images and attachments.'}
-                      </span>
-                    </div>
-                  </aside>
                 </div>
               </section>
 
