@@ -2223,6 +2223,7 @@ function App() {
     ).length,
   }))
   const activeCommandPaletteItem = commandPaletteItems[commandPaletteIndex] ?? null
+  const selectedNoteTags = selectedNote?.tags.slice(0, 6) ?? []
 
   return (
     <div className="app-shell">
@@ -2383,6 +2384,10 @@ function App() {
               Refresh
             </button>
           </div>
+          <div className="note-list-subheading">
+            <span>{knowledgeBaseIndex.notes.length} indexed notes</span>
+            <span>Offline-first local library</span>
+          </div>
 
           <div className="note-list">
             {knowledgeBaseIndex.notes.length > 0 ? (
@@ -2395,9 +2400,14 @@ function App() {
                 >
                   <div className="note-card-top">
                     <strong>{note.title}</strong>
-                    <span>{formatRelativeDate(note.updatedAtMs)}</span>
                   </div>
-                  <p>{note.summary}</p>
+                  <p className="note-card-summary">{note.summary || 'No summary yet.'}</p>
+                  <div className="note-card-footer">
+                    <span className="note-chip">
+                      {note.tags[0] ?? note.folder.toUpperCase()}
+                    </span>
+                    <span className="note-time">{formatRelativeDate(note.updatedAtMs)}</span>
+                  </div>
                 </button>
               ))
             ) : (
@@ -2807,7 +2817,7 @@ function App() {
           <div className="panel-heading">
             <div>
               <p className="section-label">Connections</p>
-              <h2>Context & links</h2>
+              <h2>{selectedNote ? 'Note context' : 'Connections'}</h2>
             </div>
             <button type="button" className="ghost-action" onClick={() => setSyncPanelOpen(true)}>
               Sync settings
@@ -2815,58 +2825,111 @@ function App() {
           </div>
 
           <section className="inspector-section">
-            <p className="section-label">Default offline path</p>
-            <div className="kb-directory-card">
-              <strong>{localRootPath}</strong>
-              <p>{localLibraryMessage}</p>
-              <div className="directory-stats">
-                <span>Notes root {knowledgeBaseIndex.notesRoot}</span>
-                <span>Assets root {knowledgeBaseIndex.assetsRoot}</span>
-              </div>
+            <div className="connection-graph-card">
+              <div className="connection-graph-center" />
+              <div className="connection-graph-node node-a" />
+              <div className="connection-graph-node node-b" />
+              <div className="connection-graph-node node-c" />
+              <div className="connection-graph-node node-d" />
+              <div className="connection-graph-line line-a" />
+              <div className="connection-graph-line line-b" />
+              <div className="connection-graph-line line-c" />
+              <span className="connection-graph-label">Interactive Graph</span>
             </div>
           </section>
 
           <section className="inspector-section">
-            <div className="section-heading">
-              <p className="section-label">Remote sync</p>
-              <button
-                type="button"
-                className="ghost-action"
-                onClick={() => {
-                  if (syncConfig) {
-                    setDraftSyncConfig(syncConfig)
-                  }
-                  setSyncPanelOpen(true)
-                }}
-              >
-                {syncConfig ? 'Manage' : 'Configure'}
-              </button>
+            <p className="section-label">Backlinks</p>
+            <div className="connection-card-list">
+              {noteConnections.backlinks.length > 0 ? (
+                noteConnections.backlinks.map((item) => (
+                  <button
+                    key={item.noteId}
+                    type="button"
+                    className="connection-card"
+                    onClick={() => handleSelectNote(item.noteId)}
+                  >
+                    <strong>{item.title}</strong>
+                    <span>{item.relativePath}</span>
+                  </button>
+                ))
+              ) : (
+                <div className="empty-directory-state">{noteConnectionsStatusMessage}</div>
+              )}
             </div>
-            <div className="kb-directory-card">
+          </section>
+
+          <section className="inspector-section">
+            <p className="section-label">Outgoing links</p>
+            <div className="connection-card-list">
+              {noteConnections.outgoingLinks.length > 0 ? (
+                noteConnections.outgoingLinks.map((item) => (
+                  <button
+                    key={item.noteId}
+                    type="button"
+                    className="connection-card"
+                    onClick={() => handleSelectNote(item.noteId)}
+                  >
+                    <strong>{item.title}</strong>
+                    <span>{item.relativePath}</span>
+                  </button>
+                ))
+              ) : (
+                <div className="empty-directory-state">No resolved wikilinks in this note yet.</div>
+              )}
+              {noteConnections.unresolvedLinks.length > 0 ? (
+                <div className="link-callout">
+                  <strong>Unresolved</strong>
+                  {noteConnections.unresolvedLinks.map((item) => (
+                    <span key={item}>[[{item}]]</span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          </section>
+
+          <section className="inspector-section">
+            <p className="section-label">Related tags</p>
+            {selectedNoteTags.length > 0 ? (
+              <div className="related-tag-list">
+                {selectedNoteTags.map((tag) => (
+                  <span key={tag} className="related-tag-chip">
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <div className="empty-directory-state">No tags on this note yet.</div>
+            )}
+          </section>
+
+          <section className="inspector-section">
+            <div className={`sync-summary-card sync-summary-card-${syncButtonTone}`}>
+              <div className="section-heading">
+                <p className="section-label">Remote sync</p>
+                <button
+                  type="button"
+                  className="ghost-action"
+                  onClick={() => {
+                    if (syncConfig) {
+                      setDraftSyncConfig(syncConfig)
+                    }
+                    setSyncPanelOpen(true)
+                  }}
+                >
+                  {syncConfig ? 'Manage' : 'Configure'}
+                </button>
+              </div>
               <strong>{syncConfig ? syncConfig.profileName : 'Remote sync not configured'}</strong>
               <p>{syncStatus.message}</p>
               <div className="directory-stats">
-                <span>{syncStatus.mountPoint || 'No mount point yet'}</span>
-                <span>{syncStatus.remoteRootPath || 'No remote library path yet'}</span>
+                <span>{syncStatus.localSnapshot?.noteCount ?? knowledgeBaseIndex.notes.length} local notes</span>
+                <span>{syncStatus.remoteSnapshot?.noteCount ?? 0} remote notes</span>
               </div>
-              {syncStatus.localSnapshot ? (
-                <div className="sync-snapshot-grid">
-                  <div className="sync-snapshot-card">
-                    <strong>Local</strong>
-                    <span>{syncStatus.localSnapshot.noteCount} notes</span>
-                    <span>{syncStatus.localSnapshot.assetFileCount} assets</span>
-                  </div>
-                  <div className="sync-snapshot-card">
-                    <strong>Remote</strong>
-                    <span>{syncStatus.remoteSnapshot?.noteCount ?? 0} notes</span>
-                    <span>{syncStatus.remoteSnapshot?.assetFileCount ?? 0} assets</span>
-                  </div>
-                </div>
-              ) : null}
               {syncStatus.conflicts.length > 0 ? (
-                <div className="sync-conflict-list">
+                <div className="sync-conflict-list compact">
                   <strong>Conflicts</strong>
-                  {syncStatus.conflicts.slice(0, 6).map((path) => (
+                  {syncStatus.conflicts.slice(0, 3).map((path) => (
                     <div key={path} className="sync-conflict-item">
                       <span>{path}</span>
                       <div className="sync-conflict-actions">
@@ -2889,101 +2952,6 @@ function App() {
                   ))}
                 </div>
               ) : null}
-            </div>
-          </section>
-
-          <section className="inspector-section">
-            <div className="section-heading">
-              <p className="section-label">Indexed notes</p>
-              <button
-                type="button"
-                className="ghost-action"
-                onClick={() => void refreshLocalWorkspace(localRootPath)}
-              >
-                Reindex
-              </button>
-            </div>
-            <div className="kb-directory-card">
-              <strong>{knowledgeBaseIndex.notesRoot}</strong>
-              <p>{knowledgeBaseIndex.message}</p>
-              <div className="directory-stats">
-                <span>Markdown notes {knowledgeBaseIndex.notes.length}</span>
-                <span>Assets root {knowledgeBaseIndex.assetsRoot}</span>
-              </div>
-              <div className="stack-list compact">
-                {knowledgeBaseIndex.notes.length > 0 ? (
-                  knowledgeBaseIndex.notes.slice(0, 6).map((note) => (
-                    <button
-                      key={note.id}
-                      type="button"
-                      className="stack-item subtle"
-                      onClick={() => handleSelectNote(note.id)}
-                    >
-                      {note.relativePath}
-                    </button>
-                  ))
-                ) : (
-                  <div className="empty-directory-state">No markdown notes indexed yet.</div>
-                )}
-              </div>
-            </div>
-          </section>
-
-          <section className="inspector-section">
-            <p className="section-label">Backlinks</p>
-            <div className="stack-list">
-              {noteConnections.backlinks.length > 0 ? (
-                noteConnections.backlinks.map((item) => (
-                  <button
-                    key={item.noteId}
-                    type="button"
-                    className="stack-item subtle"
-                    onClick={() => handleSelectNote(item.noteId)}
-                  >
-                    <span>{item.title}</span>
-                    <strong>{item.relativePath}</strong>
-                  </button>
-                ))
-              ) : (
-                <div className="empty-directory-state">{noteConnectionsStatusMessage}</div>
-              )}
-            </div>
-          </section>
-
-          <section className="inspector-section">
-            <p className="section-label">Outgoing links</p>
-            <div className="stack-list">
-              {noteConnections.outgoingLinks.length > 0 ? (
-                noteConnections.outgoingLinks.map((item) => (
-                  <button
-                    key={item.noteId}
-                    type="button"
-                    className="stack-item subtle"
-                    onClick={() => handleSelectNote(item.noteId)}
-                  >
-                    <span>{item.title}</span>
-                    <strong>{item.relativePath}</strong>
-                  </button>
-                ))
-              ) : (
-                <div className="empty-directory-state">No resolved wikilinks in this note yet.</div>
-              )}
-              {noteConnections.unresolvedLinks.length > 0 ? (
-                <div className="link-callout">
-                  <strong>Unresolved</strong>
-                  {noteConnections.unresolvedLinks.map((item) => (
-                    <span key={item}>[[{item}]]</span>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          </section>
-
-          <section className="inspector-section">
-            <p className="section-label">Knowledge base shape</p>
-            <div className="kb-card">
-              <strong>Stage 2</strong>
-              <p>Offline-first notes with an optional remote sync target and a first-pass sync flow.</p>
             </div>
           </section>
         </aside>

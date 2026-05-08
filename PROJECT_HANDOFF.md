@@ -169,8 +169,8 @@ Current UI progress after the first shell pass:
 - done:
   - main editor workspace shell now follows the standardized continuous-column desktop layout direction
   - first-pass omni-search / command palette is now in place
+  - note list density and the right-side connections panel now more closely follow the `4:567` editor layout
 - next:
-  - refine the note list and right connections sidebar toward the density and hierarchy in `4:567`
   - replace the placeholder graph action with the real graph view from `4:376`
   - build the media page shell from `4:2`
 
