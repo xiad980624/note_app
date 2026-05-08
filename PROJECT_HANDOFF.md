@@ -165,6 +165,15 @@ Immediate UI refactor sequence:
 3. add a real omni-search / command palette flow based on node `4:226`
 4. then build graph and media views inside the same shell using nodes `4:376` and `4:2`
 
+Current UI progress after the first shell pass:
+- done:
+  - main editor workspace shell now follows the standardized continuous-column desktop layout direction
+  - first-pass omni-search / command palette is now in place
+- next:
+  - refine the note list and right connections sidebar toward the density and hierarchy in `4:567`
+  - replace the placeholder graph action with the real graph view from `4:376`
+  - build the media page shell from `4:2`
+
 ## 5. Current code status
 
 Main app files:
@@ -268,6 +277,11 @@ Current implementation detail:
   - code block insertion now also supports a quick language picker with common presets
   - preview code blocks expose a direct copy action
   - backlinks and outgoing wikilinks now resolve from real `[[...]]` note references instead of placeholder UI data
+  - a first-pass omni-search / command palette now exists:
+    - opens from `Cmd/Ctrl + K`
+    - opens from the top search field
+    - groups recent notes, tags, and actions
+    - supports arrow-key navigation, enter-to-open, and escape-to-close
 - sync UI now:
   - lives behind the top-right sync button
   - shows a warning state when remote sync is missing or unhealthy
