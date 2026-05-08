@@ -180,6 +180,7 @@ Current UI progress after the first shell pass:
 - next:
   - keep polishing the graph and media visual fidelity toward the Figma references
   - add richer graph behaviors and stronger media filtering / sorting
+  - continue strengthening note-writing flows on top of the new shell, starting with faster wikilink insertion
 
 ## 5. Current code status
 
@@ -260,6 +261,10 @@ Current implementation detail:
     - image reference insertion
   - supports `Tab` / `Shift+Tab` indentation inside the markdown editor
   - treats `Tab` inside fenced code blocks as code indentation
+  - supports inline wikilink suggestions in Markdown mode:
+    - type `[[` to open local note suggestions
+    - filter suggestions from note title, path, or tags
+    - use arrow keys plus `Enter` / `Tab` to insert `[[Note Title]]`
   - supports a richer preview mode for:
     - headings
     - paragraphs
