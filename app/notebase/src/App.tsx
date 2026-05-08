@@ -128,6 +128,20 @@ type NoteConnections = {
   message: string
 }
 
+type WorkspaceView = 'notes' | 'graph' | 'media'
+type MediaFilter = 'all' | 'image' | 'pdf' | 'video' | 'file'
+
+type MediaAssetRecord = {
+  id: string
+  fileName: string
+  relativeAssetPath: string
+  absolutePath: string
+  kind: 'image' | 'pdf' | 'video' | 'audio' | 'file'
+  sizeBytes: number
+  updatedAtMs: number | null
+  linkedNotes: NoteLinkReference[]
+}
+
 type CommandPaletteItem = {
   id: string
   group: 'recent_notes' | 'tags' | 'actions'
@@ -217,6 +231,18 @@ const formatRelativeDate = (updatedAtMs: number | null) => {
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date(updatedAtMs))
+}
+
+const formatFileSize = (sizeBytes: number) => {
+  if (sizeBytes >= 1024 * 1024) {
+    return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`
+  }
+
+  if (sizeBytes >= 1024) {
+    return `${Math.round(sizeBytes / 1024)} KB`
+  }
+
+  return `${sizeBytes} B`
 }
 
 const loadStoredSyncConfig = (): SyncConfig | null => {
@@ -829,6 +855,9 @@ function App() {
     return raw ? (JSON.parse(raw) as string | null) : null
   })
   const [selectedNoteDocument, setSelectedNoteDocument] = useState<NoteDocument | null>(null)
+  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('notes')
+  const [mediaFilter, setMediaFilter] = useState<MediaFilter>('all')
+  const [graphZoom, setGraphZoom] = useState(1)
   const [editorBody, setEditorBody] = useState('')
   const [lastSavedBody, setLastSavedBody] = useState('')
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
@@ -853,6 +882,8 @@ function App() {
     unresolvedLinks: [],
     message: 'Select a note to inspect links.',
   })
+  const [mediaAssets, setMediaAssets] = useState<MediaAssetRecord[]>([])
+  const [selectedMediaAssetId, setSelectedMediaAssetId] = useState<string | null>(null)
 
   const runningInTauri = useMemo(() => isTauriRuntime(), [])
   const hasUnsavedChanges = selectedNoteDocument ? editorBody !== lastSavedBody : false
@@ -868,6 +899,21 @@ function App() {
     knowledgeBaseIndex.notes.find((note) => note.id === selectedNoteId) ??
     knowledgeBaseIndex.notes[0] ??
     null
+  const selectedMediaAsset =
+    mediaAssets.find((asset) => asset.id === selectedMediaAssetId) ?? mediaAssets[0] ?? null
+  const filteredMediaAssets = useMemo(() => {
+    if (mediaFilter === 'all') {
+      return mediaAssets
+    }
+
+    return mediaAssets.filter((asset) => {
+      if (mediaFilter === 'file') {
+        return !['image', 'pdf', 'video'].includes(asset.kind)
+      }
+
+      return asset.kind === mediaFilter
+    })
+  }, [mediaAssets, mediaFilter])
   const editableTitle = useMemo(() => deriveEditableTitle(editorBody), [editorBody])
   const previewBlocks = useMemo(() => renderPreviewBlocks(editorBody), [editorBody])
   const referencedAssets = useMemo(() => extractReferencedAssets(editorBody), [editorBody])
@@ -980,6 +1026,25 @@ function App() {
     }
   }, [runningInTauri])
 
+  const refreshMediaAssets = useCallback(async (rootPath: string) => {
+    if (!runningInTauri) {
+      setMediaAssets([])
+      setSelectedMediaAssetId(null)
+      return
+    }
+
+    try {
+      const assets = await invokeWithTimeout<MediaAssetRecord[]>('list_library_assets', { rootPath })
+      setMediaAssets(assets)
+      setSelectedMediaAssetId((current) =>
+        current && assets.some((asset) => asset.id === current) ? current : assets[0]?.id ?? null,
+      )
+    } catch {
+      setMediaAssets([])
+      setSelectedMediaAssetId(null)
+    }
+  }, [runningInTauri])
+
   const loadSelectedNoteDocument = useCallback(async (noteId: string, rootPath: string) => {
     if (!runningInTauri) {
       setSelectedNoteDocument(null)
@@ -1069,6 +1134,7 @@ function App() {
         setLocalRootPath(response.rootPath)
         setLocalLibraryMessage(response.message)
         await refreshLocalWorkspace(response.rootPath)
+        await refreshMediaAssets(response.rootPath)
 
         if (syncConfig) {
           await assessSyncReadiness(response.rootPath, syncConfig)
@@ -1097,7 +1163,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [assessSyncReadiness, refreshLocalWorkspace, runningInTauri, syncConfig])
+  }, [assessSyncReadiness, refreshLocalWorkspace, refreshMediaAssets, runningInTauri, syncConfig])
 
   useEffect(() => {
     if (!selectedNoteId) {
@@ -1485,6 +1551,7 @@ function App() {
             ? `Imported ${files[0].name} into ${importedPaths[0]}.`
             : `Imported ${files.length} files into the local asset library.`,
         )
+        await refreshMediaAssets(localRootPath)
       } catch (error) {
         setSaveStatus('error')
         setSaveMessage(
@@ -1498,6 +1565,7 @@ function App() {
       editorBody,
       editorViewMode,
       localRootPath,
+      refreshMediaAssets,
       runningInTauri,
       selectedNoteId,
       syncMarkdownFromRichTextEditor,
@@ -1730,6 +1798,7 @@ function App() {
             : response.message,
         )
         await refreshLocalWorkspace(localRootPath)
+        await refreshMediaAssets(localRootPath)
       } catch (error) {
         setSaveStatus('error')
         setSaveMessage(
@@ -1742,6 +1811,7 @@ function App() {
       hasUnsavedChanges,
       localRootPath,
       refreshLocalWorkspace,
+      refreshMediaAssets,
       runningInTauri,
       selectedNoteDocument,
       selectedNoteId,
@@ -1954,6 +2024,7 @@ function App() {
         rootPath: localRootPath,
       })
       await refreshLocalWorkspace(localRootPath)
+      await refreshMediaAssets(localRootPath)
       setSelectedNoteId(response.note.id)
       setSaveStatus('saved')
       setSaveMessage(response.message)
@@ -1963,7 +2034,7 @@ function App() {
         error instanceof Error ? error.message : 'Failed to create a new note in the offline library.',
       )
     }
-  }, [hasUnsavedChanges, localRootPath, refreshLocalWorkspace, runningInTauri])
+  }, [hasUnsavedChanges, localRootPath, refreshLocalWorkspace, refreshMediaAssets, runningInTauri])
 
   const handleSyncConfigChange =
     (field: keyof SyncConfig) => (event: ChangeEvent<HTMLInputElement>) => {
@@ -2008,6 +2079,7 @@ function App() {
       setSyncStatus(response)
       setDecisionPanelOpen(false)
       await refreshLocalWorkspace(localRootPath)
+      await refreshMediaAssets(localRootPath)
     } catch (error) {
       setSyncStatus({
         ...emptySyncStatus(
@@ -2019,40 +2091,7 @@ function App() {
     } finally {
       setSyncBusy(false)
     }
-  }, [localRootPath, refreshLocalWorkspace, syncConfig])
-
-  const handleResolveConflict = async (
-    relativePath: string,
-    resolution: 'keep_local' | 'keep_remote',
-  ) => {
-    if (!syncConfig) {
-      return
-    }
-
-    setSyncBusy(true)
-    try {
-      const response = await invokeWithTimeout<SyncStatusResponse>('resolve_sync_conflict', {
-        payload: {
-          localRootPath,
-          config: syncConfig,
-          relativePath,
-          resolution,
-        },
-      })
-      setSyncStatus(response)
-      await refreshLocalWorkspace(localRootPath)
-    } catch (error) {
-      setSyncStatus({
-        ...emptySyncStatus(
-          error instanceof Error ? error.message : 'Failed to resolve the selected conflict.',
-        ),
-        configured: true,
-        status: 'failed',
-      })
-    } finally {
-      setSyncBusy(false)
-    }
-  }
+  }, [localRootPath, refreshLocalWorkspace, refreshMediaAssets, syncConfig])
 
   const handleSyncButtonClick = useCallback(() => {
     if (!syncConfig) {
@@ -2091,6 +2130,10 @@ function App() {
     setCommandPaletteOpen(false)
     setCommandPaletteQuery('')
     setCommandPaletteIndex(0)
+  }, [])
+
+  const navigateToView = useCallback((view: WorkspaceView) => {
+    setWorkspaceView(view)
   }, [])
 
   const commandPaletteItems = useMemo<CommandPaletteItem[]>(() => {
@@ -2160,10 +2203,33 @@ function App() {
         id: 'action:graph',
         group: 'actions' as const,
         title: 'Open Knowledge Graph',
-        subtitle: 'Graph view is the next UI step after this command palette pass',
+        subtitle: 'Switch to the graph workspace',
         meta: 'G',
         run: () => {
           closeCommandPalette()
+          navigateToView('graph')
+        },
+      },
+      {
+        id: 'action:media',
+        group: 'actions' as const,
+        title: 'Open Media Library',
+        subtitle: 'Switch to the asset browser workspace',
+        meta: 'M',
+        run: () => {
+          closeCommandPalette()
+          navigateToView('media')
+        },
+      },
+      {
+        id: 'action:notes',
+        group: 'actions' as const,
+        title: 'Return to Notes',
+        subtitle: 'Go back to the main writing workspace',
+        meta: '⌘',
+        run: () => {
+          closeCommandPalette()
+          navigateToView('notes')
         },
       },
     ].filter((item) => matches(item.title, item.subtitle))
@@ -2177,6 +2243,7 @@ function App() {
     handleSyncButtonClick,
     knowledgeBaseIndex.notes,
     libraryTags,
+    navigateToView,
     syncConfig,
   ])
 
@@ -2216,6 +2283,24 @@ function App() {
     [commandPaletteItems],
   )
 
+  const viewMeta = {
+    notes: {
+      title: 'Recent Notes',
+      subtitle: selectedNote ? selectedNote.relativePath : 'Offline knowledge base',
+      searchPlaceholder: 'Search notes, tags, links',
+    },
+    graph: {
+      title: 'Knowledge Graph',
+      subtitle: 'Explore note relationships',
+      searchPlaceholder: 'Search knowledge...',
+    },
+    media: {
+      title: 'Media & Assets',
+      subtitle: selectedMediaAsset ? selectedMediaAsset.fileName : 'Asset library',
+      searchPlaceholder: 'Search assets...',
+    },
+  } as const
+
   const folderCounts = folders.map((folder) => ({
     ...folder,
     count: knowledgeBaseIndex.notes.filter((note) =>
@@ -2249,7 +2334,11 @@ function App() {
             </button>
 
             <nav className="nav-section shell-nav-section" aria-label="Primary navigation">
-              <button type="button" className="nav-item active">
+              <button
+                type="button"
+                className={`nav-item ${workspaceView === 'notes' ? 'active' : ''}`}
+                onClick={() => navigateToView('notes')}
+              >
                 <span>Inbox</span>
                 <strong>{knowledgeBaseIndex.notes.length}</strong>
               </button>
@@ -2262,7 +2351,18 @@ function App() {
               <button type="button" className="nav-item">
                 <span>Tags</span>
               </button>
-              <button type="button" className="nav-item">
+              <button
+                type="button"
+                className={`nav-item ${workspaceView === 'graph' ? 'active' : ''}`}
+                onClick={() => navigateToView('graph')}
+              >
+                <span>Graph</span>
+              </button>
+              <button
+                type="button"
+                className={`nav-item ${workspaceView === 'media' ? 'active' : ''}`}
+                onClick={() => navigateToView('media')}
+              >
                 <span>Media</span>
               </button>
             </nav>
@@ -2312,17 +2412,29 @@ function App() {
           <header className="workspace-topbar">
             <div className="workspace-topbar-primary">
               <div className="workspace-title-block">
-                <h2>Recent Notes</h2>
-                <p>{selectedNote ? selectedNote.relativePath : 'Offline knowledge base'}</p>
+                <h2>{viewMeta[workspaceView].title}</h2>
+                <p>{viewMeta[workspaceView].subtitle}</p>
               </div>
               <nav className="workspace-tabs" aria-label="Workspace views">
-                <button type="button" className="workspace-tab workspace-tab-active">
+                <button
+                  type="button"
+                  className={`workspace-tab ${workspaceView === 'notes' ? 'workspace-tab-active' : ''}`}
+                  onClick={() => navigateToView('notes')}
+                >
                   Notes
                 </button>
-                <button type="button" className="workspace-tab" disabled>
+                <button
+                  type="button"
+                  className={`workspace-tab ${workspaceView === 'graph' ? 'workspace-tab-active' : ''}`}
+                  onClick={() => navigateToView('graph')}
+                >
                   Graph
                 </button>
-                <button type="button" className="workspace-tab" disabled>
+                <button
+                  type="button"
+                  className={`workspace-tab ${workspaceView === 'media' ? 'workspace-tab-active' : ''}`}
+                  onClick={() => navigateToView('media')}
+                >
                   Media
                 </button>
               </nav>
@@ -2334,10 +2446,10 @@ function App() {
                 htmlFor="global-search"
                 onClick={openCommandPalette}
               >
-                <span>Search notes, tags, links</span>
+                <span>{viewMeta[workspaceView].searchPlaceholder}</span>
                 <input
                   id="global-search"
-                  placeholder="Search knowledge..."
+                  placeholder={viewMeta[workspaceView].searchPlaceholder}
                   readOnly
                   onFocus={openCommandPalette}
                 />
@@ -2368,594 +2480,741 @@ function App() {
             </div>
           </header>
 
-          <div className="workspace-grid">
-
-        <section className="note-list-panel">
-          <div className="panel-heading">
-            <div>
-              <p className="section-label">Notes</p>
-              <h2>Recent Notes</h2>
-            </div>
-            <button
-              type="button"
-              className="ghost-action"
-              onClick={() => void refreshLocalWorkspace(localRootPath)}
-            >
-              Refresh
-            </button>
-          </div>
-          <div className="note-list-subheading">
-            <span>{knowledgeBaseIndex.notes.length} indexed notes</span>
-            <span>Offline-first local library</span>
-          </div>
-
-          <div className="note-list">
-            {knowledgeBaseIndex.notes.length > 0 ? (
-              knowledgeBaseIndex.notes.map((note) => (
-                <button
-                  key={note.id}
-                  type="button"
-                  className={`note-card ${selectedNote?.id === note.id ? 'active' : ''}`}
-                  onClick={() => handleSelectNote(note.id)}
-                >
-                  <div className="note-card-top">
-                    <strong>{note.title}</strong>
+          {workspaceView === 'notes' ? (
+            <div className="workspace-grid">
+              <section className="note-list-panel">
+                <div className="panel-heading">
+                  <div>
+                    <p className="section-label">Notes</p>
+                    <h2>Recent Notes</h2>
                   </div>
-                  <p className="note-card-summary">{note.summary || 'No summary yet.'}</p>
-                  <div className="note-card-footer">
-                    <span className="note-chip">
-                      {note.tags[0] ?? note.folder.toUpperCase()}
-                    </span>
-                    <span className="note-time">{formatRelativeDate(note.updatedAtMs)}</span>
-                  </div>
-                </button>
-              ))
-            ) : (
-              <div className="empty-note-state">
-                <strong>
-                  {knowledgeBaseIndex.initializedNewKnowledgeBase
-                    ? 'New local knowledge base created'
-                    : 'No markdown notes yet'}
-                </strong>
-                <p>{knowledgeBaseIndex.message}</p>
-                <span>
-                  The app always scans the default offline path first: <code>{localRootPath}</code>.
-                </span>
-                <span>
-                  If this folder started empty, NoteBase already initialized the local knowledge
-                  base shape for you.
-                </span>
-              </div>
-            )}
-          </div>
-        </section>
-
-        <section className="editor-panel">
-          <div className="editor-header">
-            <div>
-              <p className="section-label">Draft</p>
-              {selectedNote ? (
-                <input
-                  className="editor-title-input"
-                  value={editableTitle}
-                  onChange={handleTitleChange}
-                  placeholder="Untitled note"
-                />
-              ) : (
-                <h2>No note selected</h2>
-              )}
-            </div>
-            <div className="editor-actions">
-              <div className={`save-indicator save-indicator-${saveStatus}`}>
-                <strong>
-                  {saveStatus === 'saving'
-                    ? 'Saving'
-                    : saveStatus === 'saved'
-                      ? 'Saved'
-                      : saveStatus === 'dirty'
-                        ? 'Unsaved'
-                        : saveStatus === 'error'
-                          ? 'Save issue'
-                          : 'Ready'}
-                </strong>
-                <span>{saveMessage}</span>
-              </div>
-              <div className="view-switcher" role="tablist" aria-label="Editor mode">
-                <button
-                  type="button"
-                  className={`view-pill ${editorViewMode === 'markdown' ? 'active' : ''}`}
-                  onClick={() => setEditorViewMode('markdown')}
-                >
-                  Markdown
-                </button>
-                <button
-                  type="button"
-                  className={`view-pill ${editorViewMode === 'rich-text' ? 'active' : ''}`}
-                  onClick={() => setEditorViewMode('rich-text')}
-                >
-                  Rich text
-                </button>
-                <button
-                  type="button"
-                  className={`view-pill ${editorViewMode === 'preview' ? 'active' : ''}`}
-                  onClick={() => setEditorViewMode('preview')}
-                >
-                  Preview
-                </button>
-              </div>
-              <button
-                type="button"
-                className="save-action"
-                disabled={!selectedNote || saveStatus === 'saving' || !hasUnsavedChanges}
-                onClick={() => void handleSaveNote('manual')}
-              >
-                Save
-              </button>
-            </div>
-          </div>
-
-          <div className="toolbar">
-            {formattingTools.map((tool) => (
-              <button
-                key={tool.label}
-                type="button"
-                className="tool-button"
-                title={tool.shortcut}
-                disabled={!selectedNote || editorViewMode === 'preview'}
-                onClick={() => {
-                  if (tool.kind === 'image' || tool.kind === 'file') {
-                    triggerAssetPicker(tool.kind)
-                    return
-                  }
-
-                  if (tool.kind === 'code') {
-                    setCodeLanguageMenuOpen((current) => !current)
-                    return
-                  }
-
-                  if (editorViewMode === 'rich-text') {
-                    applyRichTextCommand(tool.kind)
-                    return
-                  }
-
-                  void insertMarkdownSnippet(tool.kind)
-                }}
-              >
-                <span>{tool.label}</span>
-                <kbd>{tool.shortcut}</kbd>
-              </button>
-            ))}
-          </div>
-          {codeLanguageMenuOpen ? (
-            <div className="code-language-card">
-              <div className="code-language-header">
-                <strong>Insert code block</strong>
-                <span>Pick a language for the fence.</span>
-              </div>
-              <div className="code-language-grid">
-                {commonCodeLanguages.map((language) => (
                   <button
-                    key={language}
                     type="button"
-                    className="code-language-chip"
-                    onClick={() => handleInsertCodeWithLanguage(language)}
+                    className="ghost-action"
+                    onClick={() => void refreshLocalWorkspace(localRootPath)}
                   >
-                    {language}
+                    Refresh
                   </button>
-                ))}
-                <button
-                  type="button"
-                  className="code-language-chip code-language-chip-secondary"
-                  onClick={handleInsertCodeWithCustomLanguage}
-                >
-                  Custom...
-                </button>
-              </div>
-            </div>
-          ) : null}
-          <input
-            ref={assetPickerRef}
-            type="file"
-            className="hidden-file-input"
-            accept={assetPickerKind === 'image' ? 'image/*' : undefined}
-            onChange={(event) => void handleAssetPicked(event)}
-          />
+                </div>
+                <div className="note-list-subheading">
+                  <span>{knowledgeBaseIndex.notes.length} indexed notes</span>
+                  <span>Offline-first local library</span>
+                </div>
 
-          <div className="editor-body">
-            <article className="editor-surface">
-              <p className="meta-line">
-                {selectedNote
-                  ? `${selectedNote.relativePath} • ${selectedNote.format} • local root ${localRootPath}`
-                  : `Offline knowledge base root • ${localRootPath}`}
-              </p>
-              <div className="writing-block">
-                {selectedNote ? (
-                  <>
-                    <p>## Offline editing flow</p>
-                    <p>{saveMessage || selectedNoteDocument?.message || selectedNote.summary}</p>
-                    <p>- Relative path: {selectedNote.relativePath}</p>
-                    <p>- Folder: {selectedNote.folder}</p>
-                    <p>- Updated: {formatRelativeDate(selectedNote.updatedAtMs)}</p>
-                    <p>
-                      - Tags:{' '}
-                      {selectedNote.tags.length > 0 ? selectedNote.tags.join(', ') : 'No tags yet'}
-                    </p>
-                    <p>### Storage model</p>
-                    <p>
-                      The local offline library is the primary working copy. Sync only moves notes
-                      and assets between the local library and the remote target when you ask for it.
-                    </p>
-                    <div className="editor-caption-row">
-                      <p>
-                        {editorViewMode === 'preview'
-                          ? '### Markdown preview'
-                          : editorViewMode === 'rich-text'
-                            ? '### Rich text mode'
-                            : '### Markdown body'}
-                      </p>
+                <div className="note-list">
+                  {knowledgeBaseIndex.notes.length > 0 ? (
+                    knowledgeBaseIndex.notes.map((note) => (
+                      <button
+                        key={note.id}
+                        type="button"
+                        className={`note-card ${selectedNote?.id === note.id ? 'active' : ''}`}
+                        onClick={() => handleSelectNote(note.id)}
+                      >
+                        <div className="note-card-top">
+                          <strong>{note.title}</strong>
+                        </div>
+                        <p className="note-card-summary">{note.summary || 'No summary yet.'}</p>
+                        <div className="note-card-footer">
+                          <span className="note-chip">{note.tags[0] ?? note.folder.toUpperCase()}</span>
+                          <span className="note-time">{formatRelativeDate(note.updatedAtMs)}</span>
+                        </div>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="empty-note-state">
+                      <strong>
+                        {knowledgeBaseIndex.initializedNewKnowledgeBase
+                          ? 'New local knowledge base created'
+                          : 'No markdown notes yet'}
+                      </strong>
+                      <p>{knowledgeBaseIndex.message}</p>
                       <span>
-                        {editorViewMode === 'preview'
-                          ? 'Preview updates from the current local draft'
-                          : hasUnsavedChanges
-                            ? 'Cmd/Ctrl+S to save locally'
-                            : 'Saved locally'}
+                        The app always scans the default offline path first: <code>{localRootPath}</code>.
+                      </span>
+                      <span>
+                        If this folder started empty, NoteBase already initialized the local knowledge
+                        base shape for you.
                       </span>
                     </div>
-                    {editorViewMode === 'preview' ? (
-                      <div className="markdown-preview">
-                        {previewBlocks.length > 0 ? (
-                          previewBlocks.map((block, index) => {
-                            if (block.type === 'h1') {
-                              return (
-                                <h1 key={`${block.type}-${index}`}>{renderInlinePreview(block.content)}</h1>
-                              )
-                            }
-                            if (block.type === 'h2') {
-                              return (
-                                <h2 key={`${block.type}-${index}`}>{renderInlinePreview(block.content)}</h2>
-                              )
-                            }
-                            if (block.type === 'quote') {
-                              return (
-                                <blockquote key={`${block.type}-${index}`}>
-                                  {renderInlinePreview(block.content)}
-                                </blockquote>
-                              )
-                            }
-                            if (block.type === 'list') {
-                              return (
-                                <ul key={`${block.type}-${index}`}>
-                                  {block.content.split('\n').map((item) => (
-                                    <li key={item}>{renderInlinePreview(item)}</li>
-                                  ))}
-                                </ul>
-                              )
-                            }
-                            if (block.type === 'checklist') {
-                              return (
-                                <ul key={`${block.type}-${index}`} className="preview-checklist">
-                                  {block.content.split('\n').map((item) => {
-                                    const [checkedFlag, label] = item.split('|')
-                                    return (
-                                      <li key={item}>
-                                        <input type="checkbox" checked={checkedFlag === '1'} readOnly />
-                                        <span>{renderInlinePreview(label)}</span>
-                                      </li>
-                                    )
-                                  })}
-                                </ul>
-                              )
-                            }
-                            if (block.type === 'code') {
-                              return (
-                                <div key={`${block.type}-${index}`} className="preview-code-block">
-                                  <div className="preview-code-header">
-                                    <span>{block.language || 'plain text'}</span>
-                                    <button
-                                      type="button"
-                                      className="ghost-action"
-                                      onClick={() => void handleCopyText(block.content, 'code block')}
-                                    >
-                                      Copy
-                                    </button>
-                                  </div>
-                                  <pre>{block.content}</pre>
-                                </div>
-                              )
-                            }
-                            return (
-                              <p key={`${block.type}-${index}`}>{renderInlinePreview(block.content)}</p>
-                            )
-                          })
-                        ) : (
-                          <p className="preview-empty">Nothing to preview yet.</p>
-                        )}
-                      </div>
-                    ) : editorViewMode === 'rich-text' ? (
-                      <div
-                        ref={richTextEditorRef}
-                        className={`rich-text-editor ${isDragActive ? 'drag-active' : ''}`}
-                        contentEditable
-                        suppressContentEditableWarning
-                        onInput={handleRichTextInput}
-                        onKeyDown={handleRichTextKeyDown}
-                        onDragOver={handleRichTextDragOver}
-                        onDragLeave={handleRichTextDragLeave}
-                        onDrop={(event) => void handleRichTextDrop(event)}
+                  )}
+                </div>
+              </section>
+
+              <section className="editor-panel">
+                <div className="editor-header">
+                  <div>
+                    <p className="section-label">Draft</p>
+                    {selectedNote ? (
+                      <input
+                        className="editor-title-input"
+                        value={editableTitle}
+                        onChange={handleTitleChange}
+                        placeholder="Untitled note"
                       />
                     ) : (
-                      <textarea
-                        ref={editorTextareaRef}
-                        className={`markdown-editor ${isDragActive ? 'drag-active' : ''}`}
-                        value={editorBody}
-                        onChange={handleEditorBodyChange}
-                        onKeyDown={handleEditorKeyDown}
-                        onDragOver={handleEditorDragOver}
-                        onDragLeave={handleEditorDragLeave}
-                        onDrop={(event) => void handleEditorDrop(event)}
-                        placeholder="Start writing in Markdown..."
-                        spellCheck={false}
-                      />
+                      <h2>No note selected</h2>
                     )}
-                  </>
-                ) : (
-                  <>
-                    <p>## Default offline path</p>
-                    <p>{localLibraryMessage}</p>
-                    <p>- Knowledge base root: {knowledgeBaseIndex.rootPath}</p>
-                    <p>- Notes root: {knowledgeBaseIndex.notesRoot}</p>
-                    <p>- Assets root: {knowledgeBaseIndex.assetsRoot}</p>
-                    <p>- App metadata: {knowledgeBaseIndex.hiddenRoot}</p>
-                  </>
-                )}
-              </div>
-              <div className="code-block">
-                <div className="code-block-top">
-                  <span>ts</span>
-                  <button type="button">Copy</button>
+                  </div>
+                  <div className="editor-actions">
+                    <div className={`save-indicator save-indicator-${saveStatus}`}>
+                      <strong>
+                        {saveStatus === 'saving'
+                          ? 'Saving'
+                          : saveStatus === 'saved'
+                            ? 'Saved'
+                            : saveStatus === 'dirty'
+                              ? 'Unsaved'
+                              : saveStatus === 'error'
+                                ? 'Save issue'
+                                : 'Ready'}
+                      </strong>
+                      <span>{saveMessage}</span>
+                    </div>
+                    <div className="view-switcher" role="tablist" aria-label="Editor mode">
+                      <button
+                        type="button"
+                        className={`view-pill ${editorViewMode === 'markdown' ? 'active' : ''}`}
+                        onClick={() => setEditorViewMode('markdown')}
+                      >
+                        Markdown
+                      </button>
+                      <button
+                        type="button"
+                        className={`view-pill ${editorViewMode === 'rich-text' ? 'active' : ''}`}
+                        onClick={() => setEditorViewMode('rich-text')}
+                      >
+                        Rich text
+                      </button>
+                      <button
+                        type="button"
+                        className={`view-pill ${editorViewMode === 'preview' ? 'active' : ''}`}
+                        onClick={() => setEditorViewMode('preview')}
+                      >
+                        Preview
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      className="save-action"
+                      disabled={!selectedNote || saveStatus === 'saving' || !hasUnsavedChanges}
+                      onClick={() => void handleSaveNote('manual')}
+                    >
+                      Save
+                    </button>
+                  </div>
                 </div>
-                <pre>{`const workspace = {\n  localRootPath: "${knowledgeBaseIndex.rootPath}",\n  notesRoot: "${knowledgeBaseIndex.notesRoot}",\n  assetsRoot: "${knowledgeBaseIndex.assetsRoot}",\n  syncConfigured: ${syncConfig ? 'true' : 'false'},\n  syncState: "${syncStatus.status}",\n  selectedNote: "${selectedNote?.relativePath ?? '(none)'}",\n}`}</pre>
-              </div>
-            </article>
 
-            <aside className="preview-surface">
-              <p className="section-label">Preview snapshot</p>
-              <div className="preview-card">
-                <h3>Default local behavior</h3>
-                <ul>
-                  <li>Open the offline library first</li>
-                  <li>Keep editing available even when the NAS is unavailable</li>
-                  <li>Use sync only when you intentionally connect a remote target</li>
-                </ul>
-              </div>
-              <div className={`preview-card soft sync-preview-card sync-preview-card-${syncButtonTone}`}>
-                <p className="section-label">Sync state</p>
-                <strong>{syncConfig ? syncConfig.profileName : 'Not configured'}</strong>
-                <span>{syncStatus.message}</span>
-                {syncStatus.conflictCount > 0 ? (
-                  <span>{syncStatus.conflictCount} conflicts need a manual decision before those files can sync.</span>
+                <div className="toolbar">
+                  {formattingTools.map((tool) => (
+                    <button
+                      key={tool.label}
+                      type="button"
+                      className="tool-button"
+                      title={tool.shortcut}
+                      disabled={!selectedNote || editorViewMode === 'preview'}
+                      onClick={() => {
+                        if (tool.kind === 'image' || tool.kind === 'file') {
+                          triggerAssetPicker(tool.kind)
+                          return
+                        }
+
+                        if (tool.kind === 'code') {
+                          setCodeLanguageMenuOpen((current) => !current)
+                          return
+                        }
+
+                        if (editorViewMode === 'rich-text') {
+                          applyRichTextCommand(tool.kind)
+                          return
+                        }
+
+                        void insertMarkdownSnippet(tool.kind)
+                      }}
+                    >
+                      <span>{tool.label}</span>
+                      <kbd>{tool.shortcut}</kbd>
+                    </button>
+                  ))}
+                </div>
+                {codeLanguageMenuOpen ? (
+                  <div className="code-language-card">
+                    <div className="code-language-header">
+                      <strong>Insert code block</strong>
+                      <span>Pick a language for the fence.</span>
+                    </div>
+                    <div className="code-language-grid">
+                      {commonCodeLanguages.map((language) => (
+                        <button
+                          key={language}
+                          type="button"
+                          className="code-language-chip"
+                          onClick={() => handleInsertCodeWithLanguage(language)}
+                        >
+                          {language}
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        className="code-language-chip code-language-chip-secondary"
+                        onClick={handleInsertCodeWithCustomLanguage}
+                      >
+                        Custom...
+                      </button>
+                    </div>
+                  </div>
                 ) : null}
-              </div>
-              <div className="preview-card">
-                <p className="section-label">Offline library directory</p>
-                <strong>
-                  {libraryOverview.readable
-                    ? `${libraryOverview.directoryCount} folders • ${libraryOverview.fileCount} files`
-                    : 'Directory unavailable'}
-                </strong>
-                <span>{libraryOverview.message}</span>
-              </div>
-              <div className="preview-card">
-                <p className="section-label">Indexed markdown notes</p>
-                <strong>{knowledgeBaseIndex.notes.length}</strong>
-                <span>{knowledgeBaseIndex.message}</span>
-                {knowledgeBaseIndex.initializedNewKnowledgeBase ? (
-                  <span>The app initialized a new offline library in the default path.</span>
-                ) : null}
-              </div>
-              <div className="preview-card">
-                <p className="section-label">Note assets</p>
-                <strong>
-                  {selectedNote ? `${noteAssetPreviewItems.length} linked assets` : 'No note selected'}
-                </strong>
-                <span>
-                  {selectedNote
-                    ? 'Drag files into the Markdown editor or use the toolbar to import them.'
-                    : 'Select a note to inspect its linked images and attachments.'}
-                </span>
-                {selectedNote && noteAssetPreviewItems.length > 0 ? (
-                  <div className="asset-reference-list">
-                    {noteAssetPreviewItems.map((asset) => (
-                      <div key={`${asset.kind}:${asset.path}`} className="asset-reference-item">
-                        {asset.previewUrl ? (
-                          <img
-                            className="asset-reference-thumb"
-                            src={asset.previewUrl}
-                            alt={asset.label}
-                          />
-                        ) : (
-                          <div className="asset-reference-placeholder">
-                            {asset.kind === 'image' ? 'IMG' : 'FILE'}
+                <input
+                  ref={assetPickerRef}
+                  type="file"
+                  className="hidden-file-input"
+                  accept={assetPickerKind === 'image' ? 'image/*' : undefined}
+                  onChange={(event) => void handleAssetPicked(event)}
+                />
+
+                <div className="editor-body">
+                  <article className="editor-surface">
+                    <p className="meta-line">
+                      {selectedNote
+                        ? `${selectedNote.relativePath} • ${selectedNote.format} • local root ${localRootPath}`
+                        : `Offline knowledge base root • ${localRootPath}`}
+                    </p>
+                    <div className="writing-block">
+                      {selectedNote ? (
+                        <>
+                          <p>## Offline editing flow</p>
+                          <p>{saveMessage || selectedNoteDocument?.message || selectedNote.summary}</p>
+                          <p>- Relative path: {selectedNote.relativePath}</p>
+                          <p>- Folder: {selectedNote.folder}</p>
+                          <p>- Updated: {formatRelativeDate(selectedNote.updatedAtMs)}</p>
+                          <p>
+                            - Tags:{' '}
+                            {selectedNote.tags.length > 0 ? selectedNote.tags.join(', ') : 'No tags yet'}
+                          </p>
+                          <p>### Storage model</p>
+                          <p>
+                            The local offline library is the primary working copy. Sync only moves notes
+                            and assets between the local library and the remote target when you ask for it.
+                          </p>
+                          <div className="editor-caption-row">
+                            <p>
+                              {editorViewMode === 'preview'
+                                ? '### Markdown preview'
+                                : editorViewMode === 'rich-text'
+                                  ? '### Rich text mode'
+                                  : '### Markdown body'}
+                            </p>
+                            <span>
+                              {editorViewMode === 'preview'
+                                ? 'Preview updates from the current local draft'
+                                : hasUnsavedChanges
+                                  ? 'Cmd/Ctrl+S to save locally'
+                                  : 'Saved locally'}
+                            </span>
                           </div>
-                        )}
-                        <strong>{asset.label}</strong>
-                        <span>{asset.kind === 'image' ? 'Image' : 'File'}</span>
-                        <code>{asset.path}</code>
-                        {asset.absolutePath ? <code>{asset.absolutePath}</code> : null}
-                        {asset.absolutePath ? (
-                          <div className="asset-reference-actions">
-                            <button
-                              type="button"
-                              className="ghost-action"
-                              onClick={() => void handleOpenLocalPath(asset.absolutePath, 'open')}
-                            >
-                              Open
-                            </button>
-                            <button
-                              type="button"
-                              className="ghost-action"
-                              onClick={() => void handleOpenLocalPath(asset.absolutePath, 'reveal')}
-                            >
-                              Reveal
-                            </button>
-                          </div>
-                        ) : null}
+                          {editorViewMode === 'preview' ? (
+                            <div className="markdown-preview">
+                              {previewBlocks.length > 0 ? (
+                                previewBlocks.map((block, index) => {
+                                  if (block.type === 'h1') {
+                                    return <h1 key={`${block.type}-${index}`}>{renderInlinePreview(block.content)}</h1>
+                                  }
+                                  if (block.type === 'h2') {
+                                    return <h2 key={`${block.type}-${index}`}>{renderInlinePreview(block.content)}</h2>
+                                  }
+                                  if (block.type === 'quote') {
+                                    return (
+                                      <blockquote key={`${block.type}-${index}`}>
+                                        {renderInlinePreview(block.content)}
+                                      </blockquote>
+                                    )
+                                  }
+                                  if (block.type === 'list') {
+                                    return (
+                                      <ul key={`${block.type}-${index}`}>
+                                        {block.content.split('\n').map((item) => (
+                                          <li key={item}>{renderInlinePreview(item)}</li>
+                                        ))}
+                                      </ul>
+                                    )
+                                  }
+                                  if (block.type === 'checklist') {
+                                    return (
+                                      <ul key={`${block.type}-${index}`} className="preview-checklist">
+                                        {block.content.split('\n').map((item) => {
+                                          const [checkedFlag, label] = item.split('|')
+                                          return (
+                                            <li key={item}>
+                                              <input type="checkbox" checked={checkedFlag === '1'} readOnly />
+                                              <span>{renderInlinePreview(label)}</span>
+                                            </li>
+                                          )
+                                        })}
+                                      </ul>
+                                    )
+                                  }
+                                  if (block.type === 'code') {
+                                    return (
+                                      <div key={`${block.type}-${index}`} className="preview-code-block">
+                                        <div className="preview-code-header">
+                                          <span>{block.language || 'plain text'}</span>
+                                          <button
+                                            type="button"
+                                            className="ghost-action"
+                                            onClick={() => void handleCopyText(block.content, 'code block')}
+                                          >
+                                            Copy
+                                          </button>
+                                        </div>
+                                        <pre>{block.content}</pre>
+                                      </div>
+                                    )
+                                  }
+                                  return <p key={`${block.type}-${index}`}>{renderInlinePreview(block.content)}</p>
+                                })
+                              ) : (
+                                <p className="preview-empty">Nothing to preview yet.</p>
+                              )}
+                            </div>
+                          ) : editorViewMode === 'rich-text' ? (
+                            <div
+                              ref={richTextEditorRef}
+                              className={`rich-text-editor ${isDragActive ? 'drag-active' : ''}`}
+                              contentEditable
+                              suppressContentEditableWarning
+                              onInput={handleRichTextInput}
+                              onKeyDown={handleRichTextKeyDown}
+                              onDragOver={handleRichTextDragOver}
+                              onDragLeave={handleRichTextDragLeave}
+                              onDrop={(event) => void handleRichTextDrop(event)}
+                            />
+                          ) : (
+                            <textarea
+                              ref={editorTextareaRef}
+                              className={`markdown-editor ${isDragActive ? 'drag-active' : ''}`}
+                              value={editorBody}
+                              onChange={handleEditorBodyChange}
+                              onKeyDown={handleEditorKeyDown}
+                              onDragOver={handleEditorDragOver}
+                              onDragLeave={handleEditorDragLeave}
+                              onDrop={(event) => void handleEditorDrop(event)}
+                              placeholder="Start writing in Markdown..."
+                              spellCheck={false}
+                            />
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <p>## Default offline path</p>
+                          <p>{localLibraryMessage}</p>
+                          <p>- Knowledge base root: {knowledgeBaseIndex.rootPath}</p>
+                          <p>- Notes root: {knowledgeBaseIndex.notesRoot}</p>
+                          <p>- Assets root: {knowledgeBaseIndex.assetsRoot}</p>
+                          <p>- App metadata: {knowledgeBaseIndex.hiddenRoot}</p>
+                        </>
+                      )}
+                    </div>
+                    <div className="code-block">
+                      <div className="code-block-top">
+                        <span>ts</span>
+                        <button type="button">Copy</button>
                       </div>
+                      <pre>{`const workspace = {\n  localRootPath: "${knowledgeBaseIndex.rootPath}",\n  notesRoot: "${knowledgeBaseIndex.notesRoot}",\n  assetsRoot: "${knowledgeBaseIndex.assetsRoot}",\n  syncConfigured: ${syncConfig ? 'true' : 'false'},\n  syncState: "${syncStatus.status}",\n  selectedNote: "${selectedNote?.relativePath ?? '(none)'}",\n}`}</pre>
+                    </div>
+                  </article>
+
+                  <aside className="preview-surface">
+                    <p className="section-label">Preview snapshot</p>
+                    <div className="preview-card">
+                      <h3>Default local behavior</h3>
+                      <ul>
+                        <li>Open the offline library first</li>
+                        <li>Keep editing available even when the NAS is unavailable</li>
+                        <li>Use sync only when you intentionally connect a remote target</li>
+                      </ul>
+                    </div>
+                    <div className={`preview-card soft sync-preview-card sync-preview-card-${syncButtonTone}`}>
+                      <p className="section-label">Sync state</p>
+                      <strong>{syncConfig ? syncConfig.profileName : 'Not configured'}</strong>
+                      <span>{syncStatus.message}</span>
+                    </div>
+                    <div className="preview-card">
+                      <p className="section-label">Offline library directory</p>
+                      <strong>
+                        {libraryOverview.readable
+                          ? `${libraryOverview.directoryCount} folders • ${libraryOverview.fileCount} files`
+                          : 'Directory unavailable'}
+                      </strong>
+                      <span>{libraryOverview.message}</span>
+                    </div>
+                    <div className="preview-card">
+                      <p className="section-label">Note assets</p>
+                      <strong>
+                        {selectedNote ? `${noteAssetPreviewItems.length} linked assets` : 'No note selected'}
+                      </strong>
+                      <span>
+                        {selectedNote
+                          ? 'Drag files into the editor or use the toolbar to import them.'
+                          : 'Select a note to inspect its linked images and attachments.'}
+                      </span>
+                    </div>
+                  </aside>
+                </div>
+              </section>
+
+              <aside className="inspector-panel">
+                <div className="panel-heading">
+                  <div>
+                    <p className="section-label">Connections</p>
+                    <h2>{selectedNote ? 'Note context' : 'Connections'}</h2>
+                  </div>
+                  <button type="button" className="ghost-action" onClick={() => setSyncPanelOpen(true)}>
+                    Sync settings
+                  </button>
+                </div>
+
+                <section className="inspector-section">
+                  <div className="connection-graph-card">
+                    <div className="connection-graph-center" />
+                    <div className="connection-graph-node node-a" />
+                    <div className="connection-graph-node node-b" />
+                    <div className="connection-graph-node node-c" />
+                    <div className="connection-graph-node node-d" />
+                    <div className="connection-graph-line line-a" />
+                    <div className="connection-graph-line line-b" />
+                    <div className="connection-graph-line line-c" />
+                    <span className="connection-graph-label">Interactive Graph</span>
+                  </div>
+                </section>
+
+                <section className="inspector-section">
+                  <p className="section-label">Backlinks</p>
+                  <div className="connection-card-list">
+                    {noteConnections.backlinks.length > 0 ? (
+                      noteConnections.backlinks.map((item) => (
+                        <button
+                          key={item.noteId}
+                          type="button"
+                          className="connection-card"
+                          onClick={() => handleSelectNote(item.noteId)}
+                        >
+                          <strong>{item.title}</strong>
+                          <span>{item.relativePath}</span>
+                        </button>
+                      ))
+                    ) : (
+                      <div className="empty-directory-state">{noteConnectionsStatusMessage}</div>
+                    )}
+                  </div>
+                </section>
+
+                <section className="inspector-section">
+                  <p className="section-label">Outgoing links</p>
+                  <div className="connection-card-list">
+                    {noteConnections.outgoingLinks.length > 0 ? (
+                      noteConnections.outgoingLinks.map((item) => (
+                        <button
+                          key={item.noteId}
+                          type="button"
+                          className="connection-card"
+                          onClick={() => handleSelectNote(item.noteId)}
+                        >
+                          <strong>{item.title}</strong>
+                          <span>{item.relativePath}</span>
+                        </button>
+                      ))
+                    ) : (
+                      <div className="empty-directory-state">No resolved wikilinks in this note yet.</div>
+                    )}
+                    {noteConnections.unresolvedLinks.length > 0 ? (
+                      <div className="link-callout">
+                        <strong>Unresolved</strong>
+                        {noteConnections.unresolvedLinks.map((item) => (
+                          <span key={item}>[[{item}]]</span>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                </section>
+
+                <section className="inspector-section">
+                  <p className="section-label">Related tags</p>
+                  {selectedNoteTags.length > 0 ? (
+                    <div className="related-tag-list">
+                      {selectedNoteTags.map((tag) => (
+                        <span key={tag} className="related-tag-chip">
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="empty-directory-state">No tags on this note yet.</div>
+                  )}
+                </section>
+
+                <section className="inspector-section">
+                  <div className={`sync-summary-card sync-summary-card-${syncButtonTone}`}>
+                    <div className="section-heading">
+                      <p className="section-label">Remote sync</p>
+                      <button
+                        type="button"
+                        className="ghost-action"
+                        onClick={() => {
+                          if (syncConfig) {
+                            setDraftSyncConfig(syncConfig)
+                          }
+                          setSyncPanelOpen(true)
+                        }}
+                      >
+                        {syncConfig ? 'Manage' : 'Configure'}
+                      </button>
+                    </div>
+                    <strong>{syncConfig ? syncConfig.profileName : 'Remote sync not configured'}</strong>
+                    <p>{syncStatus.message}</p>
+                    <div className="directory-stats">
+                      <span>{syncStatus.localSnapshot?.noteCount ?? knowledgeBaseIndex.notes.length} local notes</span>
+                      <span>{syncStatus.remoteSnapshot?.noteCount ?? 0} remote notes</span>
+                    </div>
+                  </div>
+                </section>
+              </aside>
+            </div>
+          ) : workspaceView === 'graph' ? (
+            <section className="graph-workspace">
+              <div className="graph-canvas">
+                <div className="graph-scene" style={{ transform: `scale(${graphZoom})` }}>
+                  <div className="graph-orbit orbit-large" />
+                  <div className="graph-orbit orbit-small" />
+                  <button
+                    type="button"
+                    className="graph-node graph-node-center"
+                    onClick={() => navigateToView('notes')}
+                  >
+                    N
+                  </button>
+                  <button
+                    type="button"
+                    className="graph-node graph-node-blue"
+                    onClick={() => navigateToView('notes')}
+                  >
+                    {Math.max(noteConnections.outgoingLinks.length, 1)}
+                  </button>
+                  <button
+                    type="button"
+                    className="graph-node graph-node-violet"
+                    onClick={() => navigateToView('notes')}
+                  >
+                    {Math.max(noteConnections.backlinks.length, 1)}
+                  </button>
+                  <button
+                    type="button"
+                    className="graph-node graph-node-orange"
+                    onClick={() => navigateToView('notes')}
+                  >
+                    {Math.max(selectedNoteTags.length, 1)}
+                  </button>
+                  <button
+                    type="button"
+                    className="graph-node graph-node-slate"
+                    onClick={() => navigateToView('notes')}
+                  >
+                    {Math.max(noteConnections.unresolvedLinks.length, 1)}
+                  </button>
+
+                  <div className="graph-link graph-link-a" />
+                  <div className="graph-link graph-link-b" />
+                  <div className="graph-link graph-link-c" />
+                  <div className="graph-link graph-link-d" />
+                </div>
+
+                <div className="graph-floating-controls">
+                  <button
+                    type="button"
+                    className="graph-control-button"
+                    onClick={() => setGraphZoom((current) => Math.min(1.6, Number((current + 0.1).toFixed(2))))}
+                  >
+                    +
+                  </button>
+                  <button
+                    type="button"
+                    className="graph-control-button"
+                    onClick={() => setGraphZoom((current) => Math.max(0.75, Number((current - 0.1).toFixed(2))))}
+                  >
+                    −
+                  </button>
+                  <button type="button" className="graph-control-button" onClick={() => setGraphZoom(1)}>
+                    ⟲
+                  </button>
+                </div>
+
+                <div className="graph-filter-card">
+                  <div className="section-heading">
+                    <strong>Graph Filters</strong>
+                    <button type="button" className="ghost-action" onClick={() => navigateToView('notes')}>
+                      Notes
+                    </button>
+                  </div>
+                  <div className="graph-filter-row">
+                    <span className="graph-filter-dot blue" />
+                    <span>Outgoing links</span>
+                    <strong>{noteConnections.outgoingLinks.length}</strong>
+                  </div>
+                  <div className="graph-filter-row">
+                    <span className="graph-filter-dot violet" />
+                    <span>Backlinks</span>
+                    <strong>{noteConnections.backlinks.length}</strong>
+                  </div>
+                  <div className="graph-filter-row">
+                    <span className="graph-filter-dot orange" />
+                    <span>Tags</span>
+                    <strong>{selectedNoteTags.length}</strong>
+                  </div>
+                </div>
+              </div>
+              <div className="graph-status-bar">
+                <span>ACTIVE NODES: {1 + noteConnections.outgoingLinks.length + noteConnections.backlinks.length}</span>
+                <span>CONNECTIONS: {noteConnections.outgoingLinks.length + noteConnections.backlinks.length}</span>
+                <span className="graph-status-live">LIVE GRAPH SYNC: OK</span>
+              </div>
+            </section>
+          ) : (
+            <div className="media-workspace">
+              <section className="media-main-panel">
+                <div className="media-toolbar">
+                  <div className="media-filter-bar">
+                    {[
+                      ['all', 'All'],
+                      ['image', 'Images'],
+                      ['pdf', 'PDFs'],
+                      ['video', 'Videos'],
+                      ['file', 'Files'],
+                    ].map(([filterKey, label]) => (
+                      <button
+                        key={filterKey}
+                        type="button"
+                        className={`media-filter-chip ${mediaFilter === filterKey ? 'active' : ''}`}
+                        onClick={() => setMediaFilter(filterKey as MediaFilter)}
+                      >
+                        {label}
+                      </button>
                     ))}
                   </div>
-                ) : selectedNote ? (
-                  <div className="empty-directory-state">
-                    No local asset references are linked in this note yet.
+                  <div className="media-toolbar-meta">
+                    <span>{filteredMediaAssets.length} items</span>
+                    <button type="button" className="ghost-action" onClick={() => void refreshMediaAssets(localRootPath)}>
+                      Refresh
+                    </button>
+                    <button type="button" className="ghost-action">
+                      Sort by Date
+                    </button>
                   </div>
-                ) : null}
-              </div>
-            </aside>
-          </div>
-        </section>
-
-        <aside className="inspector-panel">
-          <div className="panel-heading">
-            <div>
-              <p className="section-label">Connections</p>
-              <h2>{selectedNote ? 'Note context' : 'Connections'}</h2>
-            </div>
-            <button type="button" className="ghost-action" onClick={() => setSyncPanelOpen(true)}>
-              Sync settings
-            </button>
-          </div>
-
-          <section className="inspector-section">
-            <div className="connection-graph-card">
-              <div className="connection-graph-center" />
-              <div className="connection-graph-node node-a" />
-              <div className="connection-graph-node node-b" />
-              <div className="connection-graph-node node-c" />
-              <div className="connection-graph-node node-d" />
-              <div className="connection-graph-line line-a" />
-              <div className="connection-graph-line line-b" />
-              <div className="connection-graph-line line-c" />
-              <span className="connection-graph-label">Interactive Graph</span>
-            </div>
-          </section>
-
-          <section className="inspector-section">
-            <p className="section-label">Backlinks</p>
-            <div className="connection-card-list">
-              {noteConnections.backlinks.length > 0 ? (
-                noteConnections.backlinks.map((item) => (
-                  <button
-                    key={item.noteId}
-                    type="button"
-                    className="connection-card"
-                    onClick={() => handleSelectNote(item.noteId)}
-                  >
-                    <strong>{item.title}</strong>
-                    <span>{item.relativePath}</span>
-                  </button>
-                ))
-              ) : (
-                <div className="empty-directory-state">{noteConnectionsStatusMessage}</div>
-              )}
-            </div>
-          </section>
-
-          <section className="inspector-section">
-            <p className="section-label">Outgoing links</p>
-            <div className="connection-card-list">
-              {noteConnections.outgoingLinks.length > 0 ? (
-                noteConnections.outgoingLinks.map((item) => (
-                  <button
-                    key={item.noteId}
-                    type="button"
-                    className="connection-card"
-                    onClick={() => handleSelectNote(item.noteId)}
-                  >
-                    <strong>{item.title}</strong>
-                    <span>{item.relativePath}</span>
-                  </button>
-                ))
-              ) : (
-                <div className="empty-directory-state">No resolved wikilinks in this note yet.</div>
-              )}
-              {noteConnections.unresolvedLinks.length > 0 ? (
-                <div className="link-callout">
-                  <strong>Unresolved</strong>
-                  {noteConnections.unresolvedLinks.map((item) => (
-                    <span key={item}>[[{item}]]</span>
-                  ))}
                 </div>
-              ) : null}
-            </div>
-          </section>
 
-          <section className="inspector-section">
-            <p className="section-label">Related tags</p>
-            {selectedNoteTags.length > 0 ? (
-              <div className="related-tag-list">
-                {selectedNoteTags.map((tag) => (
-                  <span key={tag} className="related-tag-chip">
-                    {tag}
-                  </span>
-                ))}
-              </div>
-            ) : (
-              <div className="empty-directory-state">No tags on this note yet.</div>
-            )}
-          </section>
-
-          <section className="inspector-section">
-            <div className={`sync-summary-card sync-summary-card-${syncButtonTone}`}>
-              <div className="section-heading">
-                <p className="section-label">Remote sync</p>
-                <button
-                  type="button"
-                  className="ghost-action"
-                  onClick={() => {
-                    if (syncConfig) {
-                      setDraftSyncConfig(syncConfig)
-                    }
-                    setSyncPanelOpen(true)
-                  }}
-                >
-                  {syncConfig ? 'Manage' : 'Configure'}
-                </button>
-              </div>
-              <strong>{syncConfig ? syncConfig.profileName : 'Remote sync not configured'}</strong>
-              <p>{syncStatus.message}</p>
-              <div className="directory-stats">
-                <span>{syncStatus.localSnapshot?.noteCount ?? knowledgeBaseIndex.notes.length} local notes</span>
-                <span>{syncStatus.remoteSnapshot?.noteCount ?? 0} remote notes</span>
-              </div>
-              {syncStatus.conflicts.length > 0 ? (
-                <div className="sync-conflict-list compact">
-                  <strong>Conflicts</strong>
-                  {syncStatus.conflicts.slice(0, 3).map((path) => (
-                    <div key={path} className="sync-conflict-item">
-                      <span>{path}</span>
-                      <div className="sync-conflict-actions">
-                        <button
-                          type="button"
-                          className="ghost-action"
-                          onClick={() => void handleResolveConflict(path, 'keep_local')}
-                        >
-                          Keep local
-                        </button>
-                        <button
-                          type="button"
-                          className="ghost-action"
-                          onClick={() => void handleResolveConflict(path, 'keep_remote')}
-                        >
-                          Keep remote
-                        </button>
-                      </div>
+                <div className="media-grid">
+                  {filteredMediaAssets.length > 0 ? (
+                    filteredMediaAssets.map((asset) => (
+                      <button
+                        key={asset.id}
+                        type="button"
+                        className={`media-card ${selectedMediaAsset?.id === asset.id ? 'active' : ''}`}
+                        onClick={() => setSelectedMediaAssetId(asset.id)}
+                      >
+                        {asset.kind === 'image' ? (
+                          <img className="media-card-thumb" src={convertFileSrc(asset.absolutePath)} alt={asset.fileName} />
+                        ) : (
+                          <div className="media-card-placeholder">{asset.kind.toUpperCase()}</div>
+                        )}
+                        <strong>{asset.fileName}</strong>
+                        <span>{`${formatFileSize(asset.sizeBytes)} • ${formatRelativeDate(asset.updatedAtMs)}`}</span>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="empty-note-state">
+                      <strong>{mediaAssets.length > 0 ? 'No assets match this filter' : 'No assets imported yet'}</strong>
+                      <p>
+                        {mediaAssets.length > 0
+                          ? 'Try another filter or import more files from the editor.'
+                          : 'Imported images, PDFs, videos, and files will appear here.'}
+                      </p>
                     </div>
-                  ))}
+                  )}
                 </div>
-              ) : null}
+              </section>
+
+              <aside className="media-sidebar">
+                <div className="panel-heading">
+                  <div>
+                    <p className="section-label">Metadata</p>
+                    <h2>Asset Info</h2>
+                  </div>
+                </div>
+                {selectedMediaAsset ? (
+                  <div className="media-sidebar-body">
+                    {selectedMediaAsset.kind === 'image' ? (
+                      <img
+                        className="media-sidebar-preview"
+                        src={convertFileSrc(selectedMediaAsset.absolutePath)}
+                        alt={selectedMediaAsset.fileName}
+                      />
+                    ) : (
+                      <div className="media-sidebar-preview media-sidebar-preview-placeholder">
+                        {selectedMediaAsset.kind.toUpperCase()}
+                      </div>
+                    )}
+                    <strong className="media-sidebar-title">{selectedMediaAsset.fileName}</strong>
+                    <div className="media-meta-grid">
+                      <span>TYPE</span>
+                      <strong>{selectedMediaAsset.kind.toUpperCase()}</strong>
+                      <span>SIZE</span>
+                      <strong>{formatFileSize(selectedMediaAsset.sizeBytes)}</strong>
+                      <span>UPDATED</span>
+                      <strong>{formatRelativeDate(selectedMediaAsset.updatedAtMs)}</strong>
+                      <span>PATH</span>
+                      <strong>{selectedMediaAsset.relativeAssetPath}</strong>
+                    </div>
+                    <div className="media-linked-notes">
+                      <p className="section-label">Linked notes</p>
+                      {selectedMediaAsset.linkedNotes.length > 0 ? (
+                        selectedMediaAsset.linkedNotes.map((item) => (
+                          <button
+                            key={item.noteId}
+                            type="button"
+                            className="connection-card"
+                            onClick={() => {
+                              setSelectedNoteId(item.noteId)
+                              navigateToView('notes')
+                            }}
+                          >
+                            <strong>{item.title}</strong>
+                            <span>{item.relativePath}</span>
+                          </button>
+                        ))
+                      ) : (
+                        <div className="empty-directory-state">No linked notes found for this asset yet.</div>
+                      )}
+                    </div>
+                    <div className="media-sidebar-actions">
+                      <button
+                        type="button"
+                        className="ghost-action media-side-action"
+                        onClick={() => void handleOpenLocalPath(selectedMediaAsset.absolutePath, 'reveal')}
+                      >
+                        Open in Finder
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-danger media-side-action"
+                        onClick={() => void handleOpenLocalPath(selectedMediaAsset.absolutePath, 'open')}
+                      >
+                        Open Asset
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="empty-directory-state">Select an asset to inspect it.</div>
+                )}
+              </aside>
             </div>
-          </section>
-        </aside>
-          </div>
+          )}
         </section>
       </div>
 
