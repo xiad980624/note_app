@@ -128,6 +128,15 @@ type NoteConnections = {
   message: string
 }
 
+type CommandPaletteItem = {
+  id: string
+  group: 'recent_notes' | 'tags' | 'actions'
+  title: string
+  subtitle?: string
+  meta?: string
+  run: () => void | Promise<void>
+}
+
 type LibrarySnapshot = {
   rootPath: string
   noteCount: number
@@ -275,6 +284,21 @@ const buildSyncButtonLabel = (status: SyncStatusResponse, busy: boolean) => {
   }
 
   return 'Sync'
+}
+
+const collectLibraryTags = (notes: RealNoteSummary[]) => {
+  const seen = new Set<string>()
+
+  for (const note of notes) {
+    for (const tag of note.tags) {
+      const normalized = tag.trim()
+      if (normalized) {
+        seen.add(normalized)
+      }
+    }
+  }
+
+  return Array.from(seen).sort((left, right) => left.localeCompare(right))
 }
 
 const formattingTools: Array<{
@@ -820,6 +844,9 @@ function App() {
   const [syncBusy, setSyncBusy] = useState(false)
   const [isDragActive, setIsDragActive] = useState(false)
   const [codeLanguageMenuOpen, setCodeLanguageMenuOpen] = useState(false)
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+  const [commandPaletteQuery, setCommandPaletteQuery] = useState('')
+  const [commandPaletteIndex, setCommandPaletteIndex] = useState(0)
   const [noteConnections, setNoteConnections] = useState<NoteConnections>({
     outgoingLinks: [],
     backlinks: [],
@@ -834,6 +861,8 @@ function App() {
   const editorTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const richTextEditorRef = useRef<HTMLDivElement | null>(null)
   const assetPickerRef = useRef<HTMLInputElement | null>(null)
+  const commandPaletteInputRef = useRef<HTMLInputElement | null>(null)
+  const commandPaletteItemsRef = useRef<CommandPaletteItem[]>([])
   const pendingSelectionRef = useRef<{ start: number; end: number }>({ start: 0, end: 0 })
   const selectedNote =
     knowledgeBaseIndex.notes.find((note) => note.id === selectedNoteId) ??
@@ -867,6 +896,7 @@ function App() {
     })
   }, [localRootPath, referencedAssets, runningInTauri, selectedNote])
   const [assetPickerKind, setAssetPickerKind] = useState<AssetImportKind>('image')
+  const libraryTags = useMemo(() => collectLibraryTags(knowledgeBaseIndex.notes), [knowledgeBaseIndex.notes])
   const noteConnectionsStatusMessage = !selectedNote
     ? 'Select a note to inspect links.'
     : !runningInTauri
@@ -1720,6 +1750,43 @@ function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        setCommandPaletteOpen(true)
+        setCommandPaletteIndex(0)
+        return
+      }
+
+      if (commandPaletteOpen) {
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          setCommandPaletteOpen(false)
+          setCommandPaletteQuery('')
+          setCommandPaletteIndex(0)
+          return
+        }
+
+        if (commandPaletteItemsRef.current.length > 0 && event.key === 'ArrowDown') {
+          event.preventDefault()
+          setCommandPaletteIndex((current) => (current + 1) % commandPaletteItemsRef.current.length)
+          return
+        }
+
+        if (commandPaletteItemsRef.current.length > 0 && event.key === 'ArrowUp') {
+          event.preventDefault()
+          setCommandPaletteIndex((current) =>
+            current === 0 ? commandPaletteItemsRef.current.length - 1 : current - 1,
+          )
+          return
+        }
+
+        if (commandPaletteItemsRef.current.length > 0 && event.key === 'Enter') {
+          event.preventDefault()
+          void commandPaletteItemsRef.current[commandPaletteIndex]?.run()
+          return
+        }
+      }
+
       if (!selectedNoteId) {
         return
       }
@@ -1814,6 +1881,8 @@ function App() {
     }
   }, [
     applyRichTextCommand,
+    commandPaletteIndex,
+    commandPaletteOpen,
     editorViewMode,
     handleSaveNote,
     insertMarkdownSnippet,
@@ -1851,7 +1920,7 @@ function App() {
     }
   }, [hasUnsavedChanges])
 
-  const handleSelectNote = (noteId: string) => {
+  const handleSelectNote = useCallback((noteId: string) => {
     if (noteId === selectedNoteId) {
       return
     }
@@ -1864,9 +1933,9 @@ function App() {
     }
 
     setSelectedNoteId(noteId)
-  }
+  }, [hasUnsavedChanges, selectedNoteId])
 
-  const handleCreateNote = async () => {
+  const handleCreateNote = useCallback(async () => {
     if (
       hasUnsavedChanges &&
       !window.confirm('You have unsaved changes in the current note. Create a new note anyway?')
@@ -1894,7 +1963,7 @@ function App() {
         error instanceof Error ? error.message : 'Failed to create a new note in the offline library.',
       )
     }
-  }
+  }, [hasUnsavedChanges, localRootPath, refreshLocalWorkspace, runningInTauri])
 
   const handleSyncConfigChange =
     (field: keyof SyncConfig) => (event: ChangeEvent<HTMLInputElement>) => {
@@ -1917,7 +1986,7 @@ function App() {
     setSyncPanelOpen(false)
   }
 
-  const handleRunSyncWithOptions = async (
+  const handleRunSyncWithOptions = useCallback(async (
     direction = 'push_local_to_remote',
     allowInitialOverride = false,
   ) => {
@@ -1950,7 +2019,7 @@ function App() {
     } finally {
       setSyncBusy(false)
     }
-  }
+  }, [localRootPath, refreshLocalWorkspace, syncConfig])
 
   const handleResolveConflict = async (
     relativePath: string,
@@ -1985,7 +2054,7 @@ function App() {
     }
   }
 
-  const handleSyncButtonClick = () => {
+  const handleSyncButtonClick = useCallback(() => {
     if (!syncConfig) {
       setDraftSyncConfig(syncConfig ?? emptySyncConfig)
       setSyncPanelOpen(true)
@@ -1999,7 +2068,7 @@ function App() {
     }
 
     void handleRunSyncWithOptions('push_local_to_remote', false)
-  }
+  }, [handleRunSyncWithOptions, syncConfig, syncStatus.status])
 
   const handleDisconnectSync = () => {
     setSyncConfig(null)
@@ -2013,12 +2082,147 @@ function App() {
     setDecisionPanelOpen(false)
   }
 
+  const openCommandPalette = useCallback(() => {
+    setCommandPaletteOpen(true)
+    setCommandPaletteIndex(0)
+  }, [])
+
+  const closeCommandPalette = useCallback(() => {
+    setCommandPaletteOpen(false)
+    setCommandPaletteQuery('')
+    setCommandPaletteIndex(0)
+  }, [])
+
+  const commandPaletteItems = useMemo<CommandPaletteItem[]>(() => {
+    const query = commandPaletteQuery.trim().toLowerCase()
+    const matches = (...parts: Array<string | undefined>) =>
+      !query || parts.some((part) => part?.toLowerCase().includes(query))
+
+    const recentNotes: CommandPaletteItem[] = knowledgeBaseIndex.notes
+      .slice(0, 8)
+      .filter((note) => matches(note.title, note.summary, note.relativePath, note.tags.join(' ')))
+      .map((note) => ({
+        id: `note:${note.id}`,
+        group: 'recent_notes' as const,
+        title: note.title,
+        subtitle: note.summary,
+        meta: note.relativePath,
+        run: () => {
+          handleSelectNote(note.id)
+          closeCommandPalette()
+        },
+      }))
+
+    const tagItems: CommandPaletteItem[] = libraryTags
+      .filter((tag) => matches(tag))
+      .slice(0, 6)
+      .map((tag) => ({
+        id: `tag:${tag}`,
+        group: 'tags' as const,
+        title: tag,
+        subtitle: 'Tag filter coming next',
+        run: () => {
+          closeCommandPalette()
+        },
+      }))
+
+    const actionItems: CommandPaletteItem[] = [
+      {
+        id: 'action:new-note',
+        group: 'actions' as const,
+        title: 'Create New Note',
+        subtitle: 'Create a fresh markdown note in the local library',
+        meta: 'N',
+        run: async () => {
+          closeCommandPalette()
+          await handleCreateNote()
+        },
+      },
+      {
+        id: 'action:sync',
+        group: 'actions' as const,
+        title: syncConfig ? 'Run Sync' : 'Configure Sync',
+        subtitle: syncConfig
+          ? 'Open the remote sync workflow for the offline library'
+          : 'Set up an optional NAS / WebDAV sync target',
+        meta: syncConfig ? 'S' : '!',
+        run: () => {
+          closeCommandPalette()
+          if (syncConfig) {
+            handleSyncButtonClick()
+          } else {
+            setDraftSyncConfig(emptySyncConfig)
+            setSyncPanelOpen(true)
+          }
+        },
+      },
+      {
+        id: 'action:graph',
+        group: 'actions' as const,
+        title: 'Open Knowledge Graph',
+        subtitle: 'Graph view is the next UI step after this command palette pass',
+        meta: 'G',
+        run: () => {
+          closeCommandPalette()
+        },
+      },
+    ].filter((item) => matches(item.title, item.subtitle))
+
+    return [...recentNotes, ...tagItems, ...actionItems]
+  }, [
+    closeCommandPalette,
+    commandPaletteQuery,
+    handleCreateNote,
+    handleSelectNote,
+    handleSyncButtonClick,
+    knowledgeBaseIndex.notes,
+    libraryTags,
+    syncConfig,
+  ])
+
+  useEffect(() => {
+    if (!commandPaletteOpen) {
+      return
+    }
+
+    window.setTimeout(() => {
+      commandPaletteInputRef.current?.focus()
+      commandPaletteInputRef.current?.select()
+    }, 0)
+  }, [commandPaletteOpen])
+
+  useEffect(() => {
+    commandPaletteItemsRef.current = commandPaletteItems
+  }, [commandPaletteItems])
+
+  const groupedCommandPaletteItems = useMemo(
+    () => [
+      {
+        key: 'recent_notes',
+        label: 'RECENT NOTES',
+        items: commandPaletteItems.filter((item) => item.group === 'recent_notes'),
+      },
+      {
+        key: 'tags',
+        label: 'TAGS',
+        items: commandPaletteItems.filter((item) => item.group === 'tags'),
+      },
+      {
+        key: 'actions',
+        label: 'ACTIONS',
+        items: commandPaletteItems.filter((item) => item.group === 'actions'),
+      },
+    ],
+    [commandPaletteItems],
+  )
+
   const folderCounts = folders.map((folder) => ({
     ...folder,
     count: knowledgeBaseIndex.notes.filter((note) =>
       note.folder.toLowerCase().startsWith(folder.name.toLowerCase()),
     ).length,
   }))
+  const activeCommandPaletteItem = commandPaletteItems[commandPaletteIndex] ?? null
 
   return (
     <div className="app-shell">
@@ -2124,9 +2328,18 @@ function App() {
             </div>
 
             <div className="workspace-topbar-actions">
-              <label className="search-field search-field-compact" htmlFor="global-search">
+              <label
+                className="search-field search-field-compact search-field-button"
+                htmlFor="global-search"
+                onClick={openCommandPalette}
+              >
                 <span>Search notes, tags, links</span>
-                <input id="global-search" placeholder="Search knowledge..." />
+                <input
+                  id="global-search"
+                  placeholder="Search knowledge..."
+                  readOnly
+                  onFocus={openCommandPalette}
+                />
                 <kbd>Cmd K</kbd>
               </label>
               <button
@@ -2777,6 +2990,93 @@ function App() {
           </div>
         </section>
       </div>
+
+      {commandPaletteOpen ? (
+        <div className="modal-shell" role="presentation" onClick={closeCommandPalette}>
+          <div
+            className="modal-card command-palette-card"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Search notes, tags, or commands"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="command-palette-input-row">
+              <span className="command-palette-search-icon" aria-hidden="true">
+                ⌕
+              </span>
+              <input
+                ref={commandPaletteInputRef}
+                value={commandPaletteQuery}
+                onChange={(event) => {
+                  setCommandPaletteQuery(event.target.value)
+                  setCommandPaletteIndex(0)
+                }}
+                placeholder="Search notes, tags, or commands..."
+              />
+            </div>
+            <div className="command-palette-results">
+              {groupedCommandPaletteItems.some((group) => group.items.length > 0) ? (
+                groupedCommandPaletteItems.map((group) =>
+                  group.items.length > 0 ? (
+                    <section key={group.key} className="command-palette-group">
+                      <p className="command-palette-group-label">{group.label}</p>
+                      <div className="command-palette-group-items">
+                        {group.items.map((item) => {
+                          const itemIndex = commandPaletteItems.findIndex(
+                            (candidate) => candidate.id === item.id,
+                          )
+
+                          return (
+                            <button
+                              key={item.id}
+                              type="button"
+                              className={`command-palette-item ${
+                                activeCommandPaletteItem?.id === item.id ? 'active' : ''
+                              }`}
+                              onMouseEnter={() => setCommandPaletteIndex(itemIndex)}
+                              onClick={() => void item.run()}
+                            >
+                              <div className="command-palette-item-main">
+                                <strong>{item.title}</strong>
+                                {item.subtitle ? <span>{item.subtitle}</span> : null}
+                              </div>
+                              <div className="command-palette-item-meta">
+                                {item.meta ? <span>{item.meta}</span> : null}
+                              </div>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </section>
+                  ) : null,
+                )
+              ) : (
+                <div className="empty-directory-state">
+                  No notes, tags, or actions match <code>{commandPaletteQuery}</code>.
+                </div>
+              )}
+            </div>
+            <div className="command-palette-footer">
+              <div className="command-palette-shortcuts">
+                <span>
+                  <kbd>↑</kbd>
+                  <kbd>↓</kbd>
+                  Navigate
+                </span>
+                <span>
+                  <kbd>Enter</kbd>
+                  Open
+                </span>
+                <span>
+                  <kbd>Esc</kbd>
+                  Close
+                </span>
+              </div>
+              <span className="command-palette-footnote">Powered by local knowledge base</span>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {syncPanelOpen ? (
         <div className="modal-shell" role="presentation">
