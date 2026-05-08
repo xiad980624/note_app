@@ -1,5 +1,13 @@
-import { invoke } from '@tauri-apps/api/core'
-import { useCallback, useEffect, useMemo, useState, type ChangeEvent } from 'react'
+import { convertFileSrc, invoke } from '@tauri-apps/api/core'
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+} from 'react'
 
 import './App.css'
 
@@ -19,9 +27,6 @@ const folders = [
 ]
 
 const tags = ['#offline-first', '#sync', '#markdown', '#knowledge-base']
-const backlinks = ['[[Desktop MVP]]', '[[Storage Strategy]]', '[[Editor Benchmarks]]']
-const outgoingLinks = ['[[Knowledge Base Shape]]', '[[Sync Flow]]', '[[Search Experience]]']
-
 const SYNC_CONFIG_KEY = 'notebase:sync-config'
 const SELECTED_NOTE_KEY = 'notebase:selected-note-id'
 const INVOKE_TIMEOUT_MS = 12000
@@ -29,6 +34,16 @@ const BROWSER_LOCAL_PATH_PLACEHOLDER = '~/Documents/NoteBase'
 
 type SaveStatus = 'idle' | 'dirty' | 'saving' | 'saved' | 'error'
 type SyncButtonTone = 'idle' | 'warning' | 'active' | 'busy'
+type EditorViewMode = 'markdown' | 'rich-text' | 'preview'
+type MarkdownSnippetKind = 'h1' | 'h2' | 'bold' | 'list' | 'quote' | 'code' | 'link'
+type AssetImportKind = 'image' | 'file'
+type PreviewBlockType = 'h1' | 'h2' | 'paragraph' | 'quote' | 'list' | 'checklist' | 'code'
+type PreviewBlock = { type: PreviewBlockType; content: string; language?: string }
+type ReferencedAsset = {
+  label: string
+  path: string
+  kind: AssetImportKind
+}
 
 type SyncConfig = {
   profileName: string
@@ -87,6 +102,30 @@ type NoteDocument = {
 
 type DefaultLocalLibraryResponse = {
   rootPath: string
+  message: string
+}
+
+type ImportAssetResponse = {
+  relativeAssetPath: string
+  markdownSnippet: string
+  message: string
+}
+
+type OpenPathResponse = {
+  path: string
+  message: string
+}
+
+type NoteLinkReference = {
+  title: string
+  noteId: string
+  relativePath: string
+}
+
+type NoteConnections = {
+  outgoingLinks: NoteLinkReference[]
+  backlinks: NoteLinkReference[]
+  unresolvedLinks: string[]
   message: string
 }
 
@@ -239,6 +278,502 @@ const buildSyncButtonLabel = (status: SyncStatusResponse, busy: boolean) => {
   return 'Sync'
 }
 
+const formattingTools: Array<{
+  label: string
+  kind: MarkdownSnippetKind | AssetImportKind
+  shortcut: string
+}> = [
+  { label: 'H1', kind: 'h1', shortcut: 'Cmd/Ctrl+Opt+1' },
+  { label: 'H2', kind: 'h2', shortcut: 'Cmd/Ctrl+Opt+2' },
+  { label: 'Bold', kind: 'bold', shortcut: 'Cmd/Ctrl+B' },
+  { label: 'List', kind: 'list', shortcut: 'Cmd/Ctrl+Shift+7' },
+  { label: 'Quote', kind: 'quote', shortcut: 'Cmd/Ctrl+Shift+.' },
+  { label: 'Code', kind: 'code', shortcut: 'Cmd/Ctrl+Opt+C' },
+  { label: 'Link', kind: 'link', shortcut: 'Cmd/Ctrl+K' },
+  { label: 'Image', kind: 'image', shortcut: 'Cmd/Ctrl+Shift+I' },
+  { label: 'File', kind: 'file', shortcut: 'Cmd/Ctrl+Shift+F' },
+]
+
+const commonCodeLanguages = ['plain text', 'ts', 'tsx', 'js', 'jsx', 'rust', 'bash', 'json', 'md']
+
+const deriveEditableTitle = (body: string) => {
+  for (const line of body.split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed.startsWith('# ')) {
+      return trimmed.slice(2).trim() || 'Untitled note'
+    }
+  }
+
+  return 'Untitled note'
+}
+
+const updateBodyTitle = (body: string, nextTitle: string) => {
+  const safeTitle = nextTitle.trim() || 'Untitled note'
+  const lines = body.split('\n')
+  const headingIndex = lines.findIndex((line) => line.trim().startsWith('# '))
+
+  if (headingIndex >= 0) {
+    lines[headingIndex] = `# ${safeTitle}`
+    return lines.join('\n')
+  }
+
+  const normalizedBody = body.trim()
+  if (!normalizedBody) {
+    return `# ${safeTitle}\n\n`
+  }
+
+  return `# ${safeTitle}\n\n${body}`
+}
+
+const renderPreviewBlocks = (body: string) => {
+  const lines = body.replace(/\r\n/g, '\n').split('\n')
+  const blocks: PreviewBlock[] = []
+  let index = 0
+
+  while (index < lines.length) {
+    const line = lines[index]
+    const trimmed = line.trim()
+
+    if (!trimmed) {
+      index += 1
+      continue
+    }
+
+    if (trimmed.startsWith('```')) {
+      const language = trimmed.slice(3).trim()
+      const codeLines: string[] = []
+      index += 1
+      while (index < lines.length && !lines[index].trim().startsWith('```')) {
+        codeLines.push(lines[index])
+        index += 1
+      }
+      index += 1
+      blocks.push({ type: 'code', content: codeLines.join('\n'), language })
+      continue
+    }
+
+    if (trimmed.startsWith('# ')) {
+      blocks.push({ type: 'h1', content: trimmed.slice(2).trim() })
+      index += 1
+      continue
+    }
+
+    if (trimmed.startsWith('## ')) {
+      blocks.push({ type: 'h2', content: trimmed.slice(3).trim() })
+      index += 1
+      continue
+    }
+
+    if (trimmed.startsWith('> ')) {
+      blocks.push({ type: 'quote', content: trimmed.slice(2).trim() })
+      index += 1
+      continue
+    }
+
+    if (trimmed.startsWith('- ')) {
+      const checklistItems: string[] = []
+      const items: string[] = []
+      while (index < lines.length && lines[index].trim().startsWith('- ')) {
+        const item = lines[index].trim().slice(2).trim()
+        const checklistMatch = item.match(/^\[( |x|X)\]\s+(.*)$/)
+        if (checklistMatch) {
+          checklistItems.push(`${checklistMatch[1].toLowerCase() === 'x' ? '1' : '0'}|${checklistMatch[2]}`)
+        } else {
+          items.push(item)
+        }
+        index += 1
+      }
+
+      if (items.length > 0) {
+        blocks.push({ type: 'list', content: items.join('\n') })
+      }
+      if (checklistItems.length > 0) {
+        blocks.push({ type: 'checklist', content: checklistItems.join('\n') })
+      }
+      continue
+    }
+
+    const paragraphLines: string[] = []
+    while (index < lines.length && lines[index].trim()) {
+      paragraphLines.push(lines[index].trim())
+      index += 1
+    }
+    blocks.push({ type: 'paragraph', content: paragraphLines.join(' ') })
+  }
+
+  return blocks
+}
+
+const renderInlinePreview = (content: string) => {
+  const pattern = /(!?\[[^\]]+\]\([^)]+\)|\*\*[^*]+\*\*|`[^`]+`)/g
+  const tokens = content.split(pattern).filter(Boolean)
+
+  return tokens.map((token, index) => {
+    const imageMatch = token.match(/^!\[([^\]]+)\]\(([^)]+)\)$/)
+    if (imageMatch) {
+      const [, alt, src] = imageMatch
+      return (
+        <span key={`img-${index}`} className="preview-inline-image">
+          <strong>{alt}</strong>
+          <span>{src}</span>
+        </span>
+      )
+    }
+
+    const linkMatch = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/)
+    if (linkMatch) {
+      const [, label, href] = linkMatch
+      return (
+        <a key={`link-${index}`} href={href} target="_blank" rel="noreferrer">
+          {label}
+        </a>
+      )
+    }
+
+    const boldMatch = token.match(/^\*\*([^*]+)\*\*$/)
+    if (boldMatch) {
+      return <strong key={`strong-${index}`}>{boldMatch[1]}</strong>
+    }
+
+    const codeMatch = token.match(/^`([^`]+)`$/)
+    if (codeMatch) {
+      return (
+        <code key={`code-${index}`} className="preview-inline-code">
+          {codeMatch[1]}
+        </code>
+      )
+    }
+
+    return <Fragment key={`text-${index}`}>{token}</Fragment>
+  })
+}
+
+const escapeHtml = (value: string) =>
+  value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
+
+const renderInlineRichTextHtml = (content: string) => {
+  const escaped = escapeHtml(content)
+  return escaped
+    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img alt="$1" src="$2" data-note-asset="image" />')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+}
+
+const markdownToRichTextHtml = (body: string) => {
+  const blocks = renderPreviewBlocks(body)
+  if (blocks.length === 0) {
+    return '<p></p>'
+  }
+
+  return blocks
+    .map((block) => {
+      if (block.type === 'h1') {
+        return `<h1>${renderInlineRichTextHtml(block.content)}</h1>`
+      }
+      if (block.type === 'h2') {
+        return `<h2>${renderInlineRichTextHtml(block.content)}</h2>`
+      }
+      if (block.type === 'quote') {
+        return `<blockquote>${renderInlineRichTextHtml(block.content)}</blockquote>`
+      }
+      if (block.type === 'list') {
+        const items = block.content
+          .split('\n')
+          .map((item) => `<li>${renderInlineRichTextHtml(item)}</li>`)
+          .join('')
+        return `<ul>${items}</ul>`
+      }
+      if (block.type === 'checklist') {
+        const items = block.content
+          .split('\n')
+          .map((item) => {
+            const [checkedFlag, label] = item.split('|')
+            const checked = checkedFlag === '1' ? ' checked' : ''
+            return `<li><input type="checkbox"${checked} disabled /><span>${renderInlineRichTextHtml(label ?? '')}</span></li>`
+          })
+          .join('')
+        return `<ul data-checklist="true">${items}</ul>`
+      }
+      if (block.type === 'code') {
+        const languageAttribute = block.language
+          ? ` data-language="${escapeHtml(block.language)}"`
+          : ''
+        return `<pre${languageAttribute}><code>${escapeHtml(block.content)}</code></pre>`
+      }
+      return `<p>${renderInlineRichTextHtml(block.content)}</p>`
+    })
+    .join('')
+}
+
+const extractInlineMarkdownFromNode = (node: ChildNode): string => {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return node.textContent ?? ''
+  }
+
+  if (!(node instanceof HTMLElement)) {
+    return ''
+  }
+
+  const content = Array.from(node.childNodes).map(extractInlineMarkdownFromNode).join('')
+  const tagName = node.tagName.toLowerCase()
+
+  if (tagName === 'strong' || tagName === 'b') {
+    return `**${content}**`
+  }
+  if (tagName === 'code' && node.parentElement?.tagName.toLowerCase() !== 'pre') {
+    return `\`${content}\``
+  }
+  if (tagName === 'a') {
+    const href = node.getAttribute('href') ?? '#'
+    return `[${content || href}](${href})`
+  }
+  if (tagName === 'img') {
+    const alt = node.getAttribute('alt') ?? 'image'
+    const src = node.getAttribute('src') ?? ''
+    return `![${alt}](${src})`
+  }
+  if (tagName === 'br') {
+    return '\n'
+  }
+
+  return content
+}
+
+const htmlToMarkdown = (html: string) => {
+  if (typeof window === 'undefined') {
+    return html
+  }
+
+  const parser = new window.DOMParser()
+  const documentNode = parser.parseFromString(html, 'text/html')
+  const lines: string[] = []
+
+  const normalizeBlock = (value: string) =>
+    value
+      .replace(/\u00a0/g, ' ')
+      .split('\n')
+      .map((line) => line.replace(/\s+$/g, ''))
+      .join('\n')
+      .trim()
+
+  for (const node of Array.from(documentNode.body.childNodes)) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = normalizeBlock(node.textContent ?? '')
+      if (text) {
+        lines.push(text)
+      }
+      continue
+    }
+
+    if (!(node instanceof HTMLElement)) {
+      continue
+    }
+
+    const tagName = node.tagName.toLowerCase()
+
+    if (tagName === 'h1') {
+      lines.push(`# ${normalizeBlock(Array.from(node.childNodes).map(extractInlineMarkdownFromNode).join(''))}`)
+      continue
+    }
+    if (tagName === 'h2') {
+      lines.push(`## ${normalizeBlock(Array.from(node.childNodes).map(extractInlineMarkdownFromNode).join(''))}`)
+      continue
+    }
+    if (tagName === 'blockquote') {
+      const text = normalizeBlock(Array.from(node.childNodes).map(extractInlineMarkdownFromNode).join(''))
+      lines.push(
+        text
+          .split('\n')
+          .map((line) => `> ${line}`)
+          .join('\n'),
+      )
+      continue
+    }
+    if (tagName === 'ul') {
+      const isChecklist = node.dataset.checklist === 'true'
+      const items = Array.from(node.children)
+        .filter((child) => child.tagName.toLowerCase() === 'li')
+        .map((child) => {
+          if (isChecklist) {
+            const checked = child.querySelector('input')?.checked ?? false
+            const text = normalizeBlock(
+              Array.from(child.childNodes)
+                .filter((childNode) => !(childNode instanceof HTMLInputElement))
+                .map(extractInlineMarkdownFromNode)
+                .join(''),
+            )
+            return `- [${checked ? 'x' : ' '}] ${text}`
+          }
+
+          const text = normalizeBlock(Array.from(child.childNodes).map(extractInlineMarkdownFromNode).join(''))
+          return `- ${text}`
+        })
+      lines.push(items.join('\n'))
+      continue
+    }
+    if (tagName === 'pre') {
+      const code = node.textContent?.replace(/\u00a0/g, ' ') ?? ''
+      const language = node.getAttribute('data-language')?.trim() ?? ''
+      const openingFence = language ? `\`\`\`${language}` : '```'
+      lines.push(`${openingFence}\n${code.trimEnd()}\n\`\`\``)
+      continue
+    }
+    if (tagName === 'div' || tagName === 'p') {
+      const text = normalizeBlock(Array.from(node.childNodes).map(extractInlineMarkdownFromNode).join(''))
+      if (text) {
+        lines.push(text)
+      }
+      continue
+    }
+
+    const text = normalizeBlock(Array.from(node.childNodes).map(extractInlineMarkdownFromNode).join(''))
+    if (text) {
+      lines.push(text)
+    }
+  }
+
+  return lines.join('\n\n').trimEnd()
+}
+
+const extractReferencedAssets = (body: string): ReferencedAsset[] => {
+  const pattern = /(!)?\[([^\]]*)\]\(([^)]+)\)/g
+  const assets: ReferencedAsset[] = []
+  const seen = new Set<string>()
+
+  for (const match of body.matchAll(pattern)) {
+    const isImage = Boolean(match[1])
+    const label = match[2]?.trim() || 'Attachment'
+    const rawPath = match[3]?.trim() || ''
+    if (
+      !rawPath ||
+      rawPath.startsWith('http://') ||
+      rawPath.startsWith('https://') ||
+      rawPath.startsWith('mailto:')
+    ) {
+      continue
+    }
+
+    const uniqueKey = `${isImage ? 'image' : 'file'}:${rawPath}`
+    if (seen.has(uniqueKey)) {
+      continue
+    }
+
+    seen.add(uniqueKey)
+    assets.push({
+      label,
+      path: rawPath,
+      kind: isImage ? 'image' : 'file',
+    })
+  }
+
+  return assets
+}
+
+const detectCodeFenceContext = (body: string, selectionStart: number, selectionEnd: number) => {
+  const textBeforeSelection = body.slice(0, selectionStart)
+  const openingFences = textBeforeSelection.match(/^```.*$/gm) ?? []
+  const closingFences = textBeforeSelection.match(/^```\s*$/gm) ?? []
+  const insideFence = openingFences.length > closingFences.length
+  const lineStart = body.lastIndexOf('\n', Math.max(selectionStart - 1, 0)) + 1
+  const nextBreak = body.indexOf('\n', selectionEnd)
+  const lineEnd = nextBreak === -1 ? body.length : nextBreak
+
+  return {
+    insideFence,
+    lineStart,
+    lineEnd,
+  }
+}
+
+const joinPathSegments = (...segments: string[]) =>
+  segments
+    .filter(Boolean)
+    .join('/')
+    .replace(/\/+/g, '/')
+
+const dirnameOfPath = (path: string) => {
+  const normalized = path.replace(/\/+/g, '/').replace(/\/$/, '')
+  const lastSlashIndex = normalized.lastIndexOf('/')
+  if (lastSlashIndex <= 0) {
+    return ''
+  }
+  return normalized.slice(0, lastSlashIndex)
+}
+
+const resolveRelativeAssetPath = (basePath: string, relativePath: string) => {
+  if (!relativePath || relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
+    return relativePath
+  }
+
+  const baseSegments = basePath.split('/').filter(Boolean)
+  const relativeSegments = relativePath.split('/').filter(Boolean)
+  const outputSegments = [...baseSegments]
+
+  for (const segment of relativeSegments) {
+    if (segment === '.') {
+      continue
+    }
+    if (segment === '..') {
+      outputSegments.pop()
+      continue
+    }
+    outputSegments.push(segment)
+  }
+
+  return `/${outputSegments.join('/')}`
+}
+
+const indentSelectedLines = (body: string, selectionStart: number, selectionEnd: number) => {
+  const lineStart = body.lastIndexOf('\n', Math.max(selectionStart - 1, 0)) + 1
+  const nextBreak = body.indexOf('\n', selectionEnd)
+  const lineEnd = nextBreak === -1 ? body.length : nextBreak
+  const target = body.slice(lineStart, lineEnd)
+  const lines = target.split('\n')
+  const nextBlock = lines.map((line) => `  ${line}`).join('\n')
+  const nextBody = body.slice(0, lineStart) + nextBlock + body.slice(lineEnd)
+
+  return {
+    nextBody,
+    selectionStart: selectionStart + 2,
+    selectionEnd: selectionEnd + lines.length * 2,
+  }
+}
+
+const unindentSelectedLines = (body: string, selectionStart: number, selectionEnd: number) => {
+  const lineStart = body.lastIndexOf('\n', Math.max(selectionStart - 1, 0)) + 1
+  const nextBreak = body.indexOf('\n', selectionEnd)
+  const lineEnd = nextBreak === -1 ? body.length : nextBreak
+  const target = body.slice(lineStart, lineEnd)
+  const lines = target.split('\n')
+  let removedSpaces = 0
+  const nextBlock = lines
+    .map((line) => {
+      if (line.startsWith('  ')) {
+        removedSpaces += 2
+        return line.slice(2)
+      }
+      if (line.startsWith('\t')) {
+        removedSpaces += 1
+        return line.slice(1)
+      }
+      return line
+    })
+    .join('\n')
+  const nextBody = body.slice(0, lineStart) + nextBlock + body.slice(lineEnd)
+
+  return {
+    nextBody,
+    selectionStart: Math.max(lineStart, selectionStart - 2),
+    selectionEnd: Math.max(lineStart, selectionEnd - removedSpaces),
+  }
+}
+
 function App() {
   const [localRootPath, setLocalRootPath] = useState(BROWSER_LOCAL_PATH_PLACEHOLDER)
   const [localLibraryMessage, setLocalLibraryMessage] = useState(
@@ -275,6 +810,7 @@ function App() {
   const [lastSavedBody, setLastSavedBody] = useState('')
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
   const [saveMessage, setSaveMessage] = useState('Select a note to start editing.')
+  const [editorViewMode, setEditorViewMode] = useState<EditorViewMode>('markdown')
   const [syncConfig, setSyncConfig] = useState<SyncConfig | null>(() => loadStoredSyncConfig())
   const [draftSyncConfig, setDraftSyncConfig] = useState<SyncConfig>(() => loadStoredSyncConfig() ?? emptySyncConfig)
   const [syncStatus, setSyncStatus] = useState<SyncStatusResponse>(
@@ -283,15 +819,79 @@ function App() {
   const [syncPanelOpen, setSyncPanelOpen] = useState(false)
   const [decisionPanelOpen, setDecisionPanelOpen] = useState(false)
   const [syncBusy, setSyncBusy] = useState(false)
+  const [isDragActive, setIsDragActive] = useState(false)
+  const [codeLanguageMenuOpen, setCodeLanguageMenuOpen] = useState(false)
+  const [noteConnections, setNoteConnections] = useState<NoteConnections>({
+    outgoingLinks: [],
+    backlinks: [],
+    unresolvedLinks: [],
+    message: 'Select a note to inspect links.',
+  })
 
   const runningInTauri = useMemo(() => isTauriRuntime(), [])
   const hasUnsavedChanges = selectedNoteDocument ? editorBody !== lastSavedBody : false
   const syncButtonTone = syncToneFromStatus(syncStatus, syncBusy)
   const syncButtonLabel = buildSyncButtonLabel(syncStatus, syncBusy)
+  const editorTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const richTextEditorRef = useRef<HTMLDivElement | null>(null)
+  const assetPickerRef = useRef<HTMLInputElement | null>(null)
+  const pendingSelectionRef = useRef<{ start: number; end: number }>({ start: 0, end: 0 })
   const selectedNote =
     knowledgeBaseIndex.notes.find((note) => note.id === selectedNoteId) ??
     knowledgeBaseIndex.notes[0] ??
     null
+  const editableTitle = useMemo(() => deriveEditableTitle(editorBody), [editorBody])
+  const previewBlocks = useMemo(() => renderPreviewBlocks(editorBody), [editorBody])
+  const referencedAssets = useMemo(() => extractReferencedAssets(editorBody), [editorBody])
+  const noteAssetPreviewItems = useMemo(() => {
+    if (!selectedNote) {
+      return []
+    }
+
+    const noteRootRelativePath = joinPathSegments('notes', selectedNote.relativePath)
+    const noteDirectoryRelativePath = dirnameOfPath(noteRootRelativePath)
+
+    return referencedAssets.map((asset) => {
+      const resolvedRootRelativePath = resolveRelativeAssetPath(noteDirectoryRelativePath, asset.path)
+      const absolutePath = resolvedRootRelativePath
+        ? joinPathSegments(localRootPath, resolvedRootRelativePath)
+        : ''
+
+      return {
+        ...asset,
+        absolutePath,
+        previewUrl:
+          runningInTauri && asset.kind === 'image' && absolutePath
+            ? convertFileSrc(absolutePath)
+            : null,
+      }
+    })
+  }, [localRootPath, referencedAssets, runningInTauri, selectedNote])
+  const [assetPickerKind, setAssetPickerKind] = useState<AssetImportKind>('image')
+  const noteConnectionsStatusMessage = !selectedNote
+    ? 'Select a note to inspect links.'
+    : !runningInTauri
+      ? 'Link inspection requires the Tauri desktop runtime.'
+      : noteConnections.message
+
+  const syncRichTextEditorFromMarkdown = useCallback(
+    (markdownBody: string) => {
+      if (editorViewMode !== 'rich-text') {
+        return
+      }
+
+      const richTextEditor = richTextEditorRef.current
+      if (!richTextEditor) {
+        return
+      }
+
+      const nextHtml = markdownToRichTextHtml(markdownBody)
+      if (richTextEditor.innerHTML !== nextHtml) {
+        richTextEditor.innerHTML = nextHtml
+      }
+    },
+    [editorViewMode],
+  )
 
   useEffect(() => {
     window.localStorage.setItem(SELECTED_NOTE_KEY, JSON.stringify(selectedNoteId))
@@ -479,24 +1079,573 @@ function App() {
     void loadSelectedNoteDocument(selectedNoteId, localRootPath)
   }, [selectedNoteId, localRootPath, loadSelectedNoteDocument])
 
+  useEffect(() => {
+    if (!selectedNoteId || !runningInTauri) {
+      return
+    }
+
+    let cancelled = false
+
+    const loadConnections = async () => {
+      setNoteConnections({
+        outgoingLinks: [],
+        backlinks: [],
+        unresolvedLinks: [],
+        message: 'Inspecting wikilinks in the local knowledge base...',
+      })
+      try {
+        const response = await invokeWithTimeout<NoteConnections>('inspect_note_connections', {
+          rootPath: localRootPath,
+          noteId: selectedNoteId,
+        })
+        if (!cancelled) {
+          setNoteConnections(response)
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setNoteConnections({
+            outgoingLinks: [],
+            backlinks: [],
+            unresolvedLinks: [],
+            message:
+              error instanceof Error
+                ? error.message
+                : 'Failed to inspect note links in the local knowledge base.',
+          })
+        }
+      }
+    }
+
+    void loadConnections()
+
+    return () => {
+      cancelled = true
+    }
+  }, [localRootPath, runningInTauri, selectedNoteId])
+
+  useEffect(() => {
+    syncRichTextEditorFromMarkdown(editorBody)
+  }, [editorBody, syncRichTextEditorFromMarkdown])
+
+  const applyEditorBody = useCallback(
+    (nextBody: string) => {
+      setEditorBody(nextBody)
+
+      if (!selectedNoteDocument) {
+        setSaveStatus('idle')
+        setSaveMessage('Select a note to start editing.')
+        return
+      }
+
+      if (nextBody === lastSavedBody) {
+        setSaveStatus('idle')
+        setSaveMessage('No unsaved changes.')
+        return
+      }
+
+      setSaveStatus('dirty')
+      setSaveMessage('Unsaved markdown changes.')
+    },
+    [lastSavedBody, selectedNoteDocument],
+  )
+
+  const handleTitleChange = (event: ChangeEvent<HTMLInputElement>) => {
+    applyEditorBody(updateBodyTitle(editorBody, event.target.value))
+  }
+
+  const applyTextSelection = useCallback((selectionStart: number, selectionEnd: number) => {
+    const textarea = editorTextareaRef.current
+    if (!textarea) {
+      return
+    }
+
+    window.requestAnimationFrame(() => {
+      textarea.focus()
+      textarea.setSelectionRange(selectionStart, selectionEnd)
+    })
+  }, [])
+
+  const syncMarkdownFromRichTextEditor = useCallback(() => {
+    const richTextEditor = richTextEditorRef.current
+    if (!richTextEditor) {
+      return
+    }
+
+    const nextMarkdown = htmlToMarkdown(richTextEditor.innerHTML)
+    applyEditorBody(nextMarkdown)
+  }, [applyEditorBody])
+
+  const promptForCodeLanguage = useCallback(() => {
+    const language = window.prompt('Code block language', 'ts') ?? ''
+    return language.trim()
+  }, [])
+
+  const normalizeCodeLanguage = useCallback(
+    (language: string) => {
+      const trimmed = language.trim()
+      return trimmed === 'plain text' ? '' : trimmed
+    },
+    [],
+  )
+
+  const insertCodeBlock = useCallback(
+    (language: string) => {
+      const normalizedLanguage = normalizeCodeLanguage(language)
+
+      if (editorViewMode === 'rich-text') {
+        const richTextEditor = richTextEditorRef.current
+        if (!richTextEditor) {
+          return
+        }
+
+        richTextEditor.focus()
+        const selection = window.getSelection()
+        const selectedText = selection?.toString() || 'code'
+        const escapedCode = escapeHtml(selectedText)
+        const languageAttribute = normalizedLanguage
+          ? ` data-language="${escapeHtml(normalizedLanguage)}"`
+          : ''
+        document.execCommand(
+          'insertHTML',
+          false,
+          `<pre${languageAttribute}><code>${escapedCode}</code></pre>`,
+        )
+        syncMarkdownFromRichTextEditor()
+        return
+      }
+
+      const textarea = editorTextareaRef.current
+      if (!textarea) {
+        return
+      }
+
+      const selectionStart = textarea.selectionStart
+      const selectionEnd = textarea.selectionEnd
+      const selectedText = editorBody.slice(selectionStart, selectionEnd)
+      const openingFence = normalizedLanguage ? `\`\`\`${normalizedLanguage}` : '```'
+      const replacement = selectedText
+        ? `${openingFence}\n${selectedText}\n\`\`\``
+        : `${openingFence}\ncode\n\`\`\``
+      const nextText =
+        editorBody.slice(0, selectionStart) + replacement + editorBody.slice(selectionEnd)
+
+      applyEditorBody(nextText)
+      const nextCursor = selectionStart + replacement.length
+      applyTextSelection(nextCursor, nextCursor)
+    },
+    [
+      applyEditorBody,
+      applyTextSelection,
+      editorBody,
+      editorViewMode,
+      normalizeCodeLanguage,
+      syncMarkdownFromRichTextEditor,
+    ],
+  )
+
+  const applyRichTextCommand = useCallback(
+    (kind: MarkdownSnippetKind) => {
+      const richTextEditor = richTextEditorRef.current
+      if (!richTextEditor) {
+        return
+      }
+
+      richTextEditor.focus()
+
+      if (kind === 'link') {
+        const href = window.prompt('Link URL', 'https://example.com')
+        if (!href) {
+          return
+        }
+        document.execCommand('createLink', false, href)
+      } else if (kind === 'list') {
+        document.execCommand('insertUnorderedList')
+      } else if (kind === 'bold') {
+        document.execCommand('bold')
+      } else if (kind === 'h1') {
+        document.execCommand('formatBlock', false, 'h1')
+      } else if (kind === 'h2') {
+        document.execCommand('formatBlock', false, 'h2')
+      } else if (kind === 'quote') {
+        document.execCommand('formatBlock', false, 'blockquote')
+      }
+
+      syncMarkdownFromRichTextEditor()
+    },
+    [syncMarkdownFromRichTextEditor],
+  )
+
+  const insertMarkdownSnippet = useCallback(
+    (kind: MarkdownSnippetKind) => {
+      const textarea = editorTextareaRef.current
+      if (!textarea) {
+        return
+      }
+
+      const selectionStart = textarea.selectionStart
+      const selectionEnd = textarea.selectionEnd
+      const selectedText = editorBody.slice(selectionStart, selectionEnd)
+      let replacement = selectedText
+      let selectionOffset = 0
+
+      switch (kind) {
+        case 'h1':
+          replacement = `# ${selectedText || 'Heading'}`
+          selectionOffset = replacement.length
+          break
+        case 'h2':
+          replacement = `## ${selectedText || 'Section'}`
+          selectionOffset = replacement.length
+          break
+        case 'bold':
+          replacement = `**${selectedText || 'bold text'}**`
+          selectionOffset = replacement.length
+          break
+        case 'list':
+          replacement = selectedText
+            ? selectedText
+                .split('\n')
+                .map((line) => `- ${line}`)
+                .join('\n')
+            : '- List item'
+          selectionOffset = replacement.length
+          break
+        case 'quote':
+          replacement = selectedText
+            ? selectedText
+                .split('\n')
+                .map((line) => `> ${line}`)
+                .join('\n')
+            : '> Quote'
+          selectionOffset = replacement.length
+          break
+        case 'link':
+          replacement = `[${selectedText || 'link text'}](https://example.com)`
+          selectionOffset = replacement.length
+          break
+      }
+
+      const nextText =
+        editorBody.slice(0, selectionStart) + replacement + editorBody.slice(selectionEnd)
+      applyEditorBody(nextText)
+
+      const nextCursor = selectionStart + selectionOffset
+      applyTextSelection(nextCursor, nextCursor)
+    },
+    [applyEditorBody, applyTextSelection, editorBody],
+  )
+
+  const triggerAssetPicker = useCallback((kind: AssetImportKind) => {
+    if (!selectedNoteId) {
+      setSaveStatus('idle')
+      setSaveMessage('Select a note before importing an asset.')
+      return
+    }
+
+    if (!runningInTauri) {
+      setSaveStatus('error')
+      setSaveMessage('Importing assets into the local library requires the Tauri desktop runtime.')
+      return
+    }
+
+    const textarea = editorTextareaRef.current
+    if (textarea) {
+      pendingSelectionRef.current = {
+        start: textarea.selectionStart,
+        end: textarea.selectionEnd,
+      }
+    } else {
+      pendingSelectionRef.current = {
+        start: editorBody.length,
+        end: editorBody.length,
+      }
+    }
+
+    setAssetPickerKind(kind)
+    assetPickerRef.current?.click()
+  }, [editorBody.length, runningInTauri, selectedNoteId])
+
+  const readFileAsBase64 = (file: File) =>
+    new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => {
+        const result = reader.result
+        if (typeof result !== 'string') {
+          reject(new Error(`Failed to read ${file.name}.`))
+          return
+        }
+
+        const [, base64Payload = ''] = result.split(',', 2)
+        resolve(base64Payload)
+      }
+      reader.onerror = () => reject(reader.error ?? new Error(`Failed to read ${file.name}.`))
+      reader.readAsDataURL(file)
+    })
+
+  const handleAssetPicked = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+
+    if (!file || !selectedNoteId) {
+      return
+    }
+
+    if (!runningInTauri) {
+      setSaveStatus('error')
+      setSaveMessage('Importing assets into the local library requires the Tauri desktop runtime.')
+      return
+    }
+    await importAssetFiles([file])
+  }
+
+  const importAssetFiles = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0 || !selectedNoteId) {
+        return
+      }
+
+      if (!runningInTauri) {
+        setSaveStatus('error')
+        setSaveMessage('Importing assets into the local library requires the Tauri desktop runtime.')
+        return
+      }
+
+      setSaveStatus('saving')
+      setSaveMessage(
+        files.length === 1
+          ? `Importing ${files[0].name} into the local knowledge base...`
+          : `Importing ${files.length} files into the local knowledge base...`,
+      )
+
+      try {
+        const selection = pendingSelectionRef.current
+        const snippets: string[] = []
+        const importedPaths: string[] = []
+
+        for (const file of files) {
+          const kind: AssetImportKind = file.type.startsWith('image/') ? 'image' : 'file'
+          const base64Data = await readFileAsBase64(file)
+          const response = await invokeWithTimeout<ImportAssetResponse>('import_asset', {
+            rootPath: localRootPath,
+            payload: {
+              noteId: selectedNoteId,
+              fileName: file.name,
+              base64Data,
+              kind,
+            },
+          })
+          snippets.push(response.markdownSnippet)
+          importedPaths.push(response.relativeAssetPath)
+        }
+
+        const insertedSnippet = snippets.join('\n')
+        if (editorViewMode === 'rich-text' && richTextEditorRef.current) {
+          const insertedHtml = markdownToRichTextHtml(insertedSnippet)
+          richTextEditorRef.current.focus()
+          document.execCommand('insertHTML', false, insertedHtml)
+          syncMarkdownFromRichTextEditor()
+        } else {
+          const nextText =
+            editorBody.slice(0, selection.start) + insertedSnippet + editorBody.slice(selection.end)
+          applyEditorBody(nextText)
+          const nextCursor = selection.start + insertedSnippet.length
+          applyTextSelection(nextCursor, nextCursor)
+        }
+        setSaveMessage(
+          files.length === 1
+            ? `Imported ${files[0].name} into ${importedPaths[0]}.`
+            : `Imported ${files.length} files into the local asset library.`,
+        )
+      } catch (error) {
+        setSaveStatus('error')
+        setSaveMessage(
+          error instanceof Error ? error.message : 'Failed to import one or more selected assets.',
+        )
+      }
+    },
+    [
+      applyEditorBody,
+      applyTextSelection,
+      editorBody,
+      editorViewMode,
+      localRootPath,
+      runningInTauri,
+      selectedNoteId,
+      syncMarkdownFromRichTextEditor,
+    ],
+  )
+
+  const handleEditorDragOver = (event: React.DragEvent<HTMLTextAreaElement>) => {
+    if (editorViewMode !== 'markdown' || !selectedNote) {
+      return
+    }
+
+    event.preventDefault()
+    setIsDragActive(true)
+  }
+
+  const handleEditorDragLeave = (event: React.DragEvent<HTMLTextAreaElement>) => {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      return
+    }
+
+    setIsDragActive(false)
+  }
+
+  const handleEditorDrop = async (event: React.DragEvent<HTMLTextAreaElement>) => {
+    if (editorViewMode !== 'markdown' || !selectedNote) {
+      return
+    }
+
+    event.preventDefault()
+    setIsDragActive(false)
+
+    const files = Array.from(event.dataTransfer.files)
+    if (files.length === 0) {
+      return
+    }
+
+    pendingSelectionRef.current = {
+      start: event.currentTarget.selectionStart,
+      end: event.currentTarget.selectionEnd,
+    }
+    await importAssetFiles(files)
+  }
+
+  const handleRichTextInput = () => {
+    syncMarkdownFromRichTextEditor()
+  }
+
+  const handleRichTextKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Tab') {
+      return
+    }
+
+    const selection = window.getSelection()
+    const anchorNode = selection?.anchorNode
+    const parentElement =
+      anchorNode instanceof HTMLElement ? anchorNode : anchorNode?.parentElement ?? null
+    const preElement = parentElement?.closest('pre')
+
+    if (!preElement || event.shiftKey) {
+      return
+    }
+
+    event.preventDefault()
+    document.execCommand('insertText', false, '  ')
+    syncMarkdownFromRichTextEditor()
+  }
+
+  const handleRichTextDrop = async (event: React.DragEvent<HTMLDivElement>) => {
+    if (editorViewMode !== 'rich-text' || !selectedNote) {
+      return
+    }
+
+    event.preventDefault()
+    setIsDragActive(false)
+
+    const files = Array.from(event.dataTransfer.files)
+    if (files.length === 0) {
+      return
+    }
+
+    await importAssetFiles(files)
+  }
+
+  const handleRichTextDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    if (editorViewMode !== 'rich-text' || !selectedNote) {
+      return
+    }
+
+    event.preventDefault()
+    setIsDragActive(true)
+  }
+
+  const handleRichTextDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      return
+    }
+
+    setIsDragActive(false)
+  }
+
+  const handleOpenLocalPath = async (path: string, mode: 'open' | 'reveal') => {
+    if (!runningInTauri) {
+      setSaveStatus('error')
+      setSaveMessage('Opening local files requires the Tauri desktop runtime.')
+      return
+    }
+
+    try {
+      const command = mode === 'open' ? 'open_local_path' : 'reveal_local_path'
+      const response = await invokeWithTimeout<OpenPathResponse>(command, { path })
+      setSaveStatus('saved')
+      setSaveMessage(response.message)
+    } catch (error) {
+      setSaveStatus('error')
+      setSaveMessage(
+        error instanceof Error ? error.message : 'Failed to open the requested local file path.',
+      )
+    }
+  }
+
+  const handleInsertCodeWithLanguage = useCallback(
+    (language: string) => {
+      insertCodeBlock(language)
+      setCodeLanguageMenuOpen(false)
+    },
+    [insertCodeBlock],
+  )
+
+  const handleInsertCodeWithCustomLanguage = useCallback(() => {
+    const language = promptForCodeLanguage()
+    handleInsertCodeWithLanguage(language)
+  }, [handleInsertCodeWithLanguage, promptForCodeLanguage])
+
+  const handleCopyText = async (content: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(content)
+      setSaveStatus('saved')
+      setSaveMessage(`Copied ${label} to the clipboard.`)
+    } catch (error) {
+      setSaveStatus('error')
+      setSaveMessage(
+        error instanceof Error ? error.message : `Failed to copy ${label} to the clipboard.`,
+      )
+    }
+  }
+
   const handleEditorBodyChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
-    const nextBody = event.target.value
-    setEditorBody(nextBody)
+    applyEditorBody(event.target.value)
+  }
 
-    if (!selectedNoteDocument) {
-      setSaveStatus('idle')
-      setSaveMessage('Select a note to start editing.')
-      return
+  const handleEditorKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === 'Tab') {
+      event.preventDefault()
+      const textarea = event.currentTarget
+      const selectionStart = textarea.selectionStart
+      const selectionEnd = textarea.selectionEnd
+      const codeFenceContext = detectCodeFenceContext(editorBody, selectionStart, selectionEnd)
+
+      if (
+        codeFenceContext.insideFence &&
+        selectionStart === selectionEnd &&
+        !event.shiftKey
+      ) {
+        const nextText =
+          editorBody.slice(0, selectionStart) + '  ' + editorBody.slice(selectionEnd)
+        applyEditorBody(nextText)
+        applyTextSelection(selectionStart + 2, selectionStart + 2)
+        return
+      }
+
+      const nextSelection = event.shiftKey
+        ? unindentSelectedLines(editorBody, selectionStart, selectionEnd)
+        : indentSelectedLines(editorBody, selectionStart, selectionEnd)
+
+      applyEditorBody(nextSelection.nextBody)
+      applyTextSelection(nextSelection.selectionStart, nextSelection.selectionEnd)
     }
-
-    if (nextBody === lastSavedBody) {
-      setSaveStatus('idle')
-      setSaveMessage('No unsaved changes.')
-      return
-    }
-
-    setSaveStatus('dirty')
-    setSaveMessage('Unsaved markdown changes.')
   }
 
   const handleSaveNote = useCallback(
@@ -572,9 +1721,91 @@ function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (!selectedNoteId) {
+        return
+      }
+
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
         event.preventDefault()
         void handleSaveNote('manual')
+        return
+      }
+
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'b') {
+        event.preventDefault()
+        if (editorViewMode === 'rich-text') {
+          applyRichTextCommand('bold')
+        } else if (editorViewMode === 'markdown') {
+          void insertMarkdownSnippet('bold')
+        }
+        return
+      }
+
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        if (editorViewMode === 'rich-text') {
+          applyRichTextCommand('link')
+        } else if (editorViewMode === 'markdown') {
+          void insertMarkdownSnippet('link')
+        }
+        return
+      }
+
+      if ((event.metaKey || event.ctrlKey) && event.altKey && event.key === '1') {
+        event.preventDefault()
+        if (editorViewMode === 'rich-text') {
+          applyRichTextCommand('h1')
+        } else if (editorViewMode === 'markdown') {
+          void insertMarkdownSnippet('h1')
+        }
+        return
+      }
+
+      if ((event.metaKey || event.ctrlKey) && event.altKey && event.key === '2') {
+        event.preventDefault()
+        if (editorViewMode === 'rich-text') {
+          applyRichTextCommand('h2')
+        } else if (editorViewMode === 'markdown') {
+          void insertMarkdownSnippet('h2')
+        }
+        return
+      }
+
+      if ((event.metaKey || event.ctrlKey) && event.altKey && event.key.toLowerCase() === 'c') {
+        event.preventDefault()
+        setCodeLanguageMenuOpen((current) => !current)
+        return
+      }
+
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key === '7') {
+        event.preventDefault()
+        if (editorViewMode === 'rich-text') {
+          applyRichTextCommand('list')
+        } else if (editorViewMode === 'markdown') {
+          void insertMarkdownSnippet('list')
+        }
+        return
+      }
+
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key === '>') {
+        event.preventDefault()
+        if (editorViewMode === 'rich-text') {
+          applyRichTextCommand('quote')
+        } else if (editorViewMode === 'markdown') {
+          void insertMarkdownSnippet('quote')
+        }
+        return
+      }
+
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'i') {
+        event.preventDefault()
+        triggerAssetPicker('image')
+        return
+      }
+
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'f') {
+        event.preventDefault()
+        triggerAssetPicker('file')
       }
     }
 
@@ -582,7 +1813,14 @@ function App() {
     return () => {
       window.removeEventListener('keydown', handleKeyDown)
     }
-  }, [handleSaveNote])
+  }, [
+    applyRichTextCommand,
+    editorViewMode,
+    handleSaveNote,
+    insertMarkdownSnippet,
+    selectedNoteId,
+    triggerAssetPicker,
+  ])
 
   useEffect(() => {
     if (!selectedNoteId || !hasUnsavedChanges || saveStatus === 'saving') {
@@ -937,7 +2175,16 @@ function App() {
           <div className="editor-header">
             <div>
               <p className="section-label">Draft</p>
-              <h2>{selectedNote?.title ?? 'No note selected'}</h2>
+              {selectedNote ? (
+                <input
+                  className="editor-title-input"
+                  value={editableTitle}
+                  onChange={handleTitleChange}
+                  placeholder="Untitled note"
+                />
+              ) : (
+                <h2>No note selected</h2>
+              )}
             </div>
             <div className="editor-actions">
               <div className={`save-indicator save-indicator-${saveStatus}`}>
@@ -955,13 +2202,25 @@ function App() {
                 <span>{saveMessage}</span>
               </div>
               <div className="view-switcher" role="tablist" aria-label="Editor mode">
-                <button type="button" className="view-pill active">
+                <button
+                  type="button"
+                  className={`view-pill ${editorViewMode === 'markdown' ? 'active' : ''}`}
+                  onClick={() => setEditorViewMode('markdown')}
+                >
                   Markdown
                 </button>
-                <button type="button" className="view-pill">
+                <button
+                  type="button"
+                  className={`view-pill ${editorViewMode === 'rich-text' ? 'active' : ''}`}
+                  onClick={() => setEditorViewMode('rich-text')}
+                >
                   Rich text
                 </button>
-                <button type="button" className="view-pill">
+                <button
+                  type="button"
+                  className={`view-pill ${editorViewMode === 'preview' ? 'active' : ''}`}
+                  onClick={() => setEditorViewMode('preview')}
+                >
                   Preview
                 </button>
               </div>
@@ -977,12 +2236,71 @@ function App() {
           </div>
 
           <div className="toolbar">
-            {['H1', 'H2', 'Bold', 'List', 'Quote', 'Code', 'Link', 'Image'].map((item) => (
-              <button key={item} type="button" className="tool-button">
-                {item}
+            {formattingTools.map((tool) => (
+              <button
+                key={tool.label}
+                type="button"
+                className="tool-button"
+                title={tool.shortcut}
+                disabled={!selectedNote || editorViewMode === 'preview'}
+                onClick={() => {
+                  if (tool.kind === 'image' || tool.kind === 'file') {
+                    triggerAssetPicker(tool.kind)
+                    return
+                  }
+
+                  if (tool.kind === 'code') {
+                    setCodeLanguageMenuOpen((current) => !current)
+                    return
+                  }
+
+                  if (editorViewMode === 'rich-text') {
+                    applyRichTextCommand(tool.kind)
+                    return
+                  }
+
+                  void insertMarkdownSnippet(tool.kind)
+                }}
+              >
+                <span>{tool.label}</span>
+                <kbd>{tool.shortcut}</kbd>
               </button>
             ))}
           </div>
+          {codeLanguageMenuOpen ? (
+            <div className="code-language-card">
+              <div className="code-language-header">
+                <strong>Insert code block</strong>
+                <span>Pick a language for the fence.</span>
+              </div>
+              <div className="code-language-grid">
+                {commonCodeLanguages.map((language) => (
+                  <button
+                    key={language}
+                    type="button"
+                    className="code-language-chip"
+                    onClick={() => handleInsertCodeWithLanguage(language)}
+                  >
+                    {language}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className="code-language-chip code-language-chip-secondary"
+                  onClick={handleInsertCodeWithCustomLanguage}
+                >
+                  Custom...
+                </button>
+              </div>
+            </div>
+          ) : null}
+          <input
+            ref={assetPickerRef}
+            type="file"
+            className="hidden-file-input"
+            accept={assetPickerKind === 'image' ? 'image/*' : undefined}
+            onChange={(event) => void handleAssetPicked(event)}
+          />
 
           <div className="editor-body">
             <article className="editor-surface">
@@ -1009,16 +2327,117 @@ function App() {
                       and assets between the local library and the remote target when you ask for it.
                     </p>
                     <div className="editor-caption-row">
-                      <p>### Markdown body</p>
-                      <span>{hasUnsavedChanges ? 'Cmd/Ctrl+S to save locally' : 'Saved locally'}</span>
+                      <p>
+                        {editorViewMode === 'preview'
+                          ? '### Markdown preview'
+                          : editorViewMode === 'rich-text'
+                            ? '### Rich text mode'
+                            : '### Markdown body'}
+                      </p>
+                      <span>
+                        {editorViewMode === 'preview'
+                          ? 'Preview updates from the current local draft'
+                          : hasUnsavedChanges
+                            ? 'Cmd/Ctrl+S to save locally'
+                            : 'Saved locally'}
+                      </span>
                     </div>
-                    <textarea
-                      className="markdown-editor"
-                      value={editorBody}
-                      onChange={handleEditorBodyChange}
-                      placeholder="Start writing in Markdown..."
-                      spellCheck={false}
-                    />
+                    {editorViewMode === 'preview' ? (
+                      <div className="markdown-preview">
+                        {previewBlocks.length > 0 ? (
+                          previewBlocks.map((block, index) => {
+                            if (block.type === 'h1') {
+                              return (
+                                <h1 key={`${block.type}-${index}`}>{renderInlinePreview(block.content)}</h1>
+                              )
+                            }
+                            if (block.type === 'h2') {
+                              return (
+                                <h2 key={`${block.type}-${index}`}>{renderInlinePreview(block.content)}</h2>
+                              )
+                            }
+                            if (block.type === 'quote') {
+                              return (
+                                <blockquote key={`${block.type}-${index}`}>
+                                  {renderInlinePreview(block.content)}
+                                </blockquote>
+                              )
+                            }
+                            if (block.type === 'list') {
+                              return (
+                                <ul key={`${block.type}-${index}`}>
+                                  {block.content.split('\n').map((item) => (
+                                    <li key={item}>{renderInlinePreview(item)}</li>
+                                  ))}
+                                </ul>
+                              )
+                            }
+                            if (block.type === 'checklist') {
+                              return (
+                                <ul key={`${block.type}-${index}`} className="preview-checklist">
+                                  {block.content.split('\n').map((item) => {
+                                    const [checkedFlag, label] = item.split('|')
+                                    return (
+                                      <li key={item}>
+                                        <input type="checkbox" checked={checkedFlag === '1'} readOnly />
+                                        <span>{renderInlinePreview(label)}</span>
+                                      </li>
+                                    )
+                                  })}
+                                </ul>
+                              )
+                            }
+                            if (block.type === 'code') {
+                              return (
+                                <div key={`${block.type}-${index}`} className="preview-code-block">
+                                  <div className="preview-code-header">
+                                    <span>{block.language || 'plain text'}</span>
+                                    <button
+                                      type="button"
+                                      className="ghost-action"
+                                      onClick={() => void handleCopyText(block.content, 'code block')}
+                                    >
+                                      Copy
+                                    </button>
+                                  </div>
+                                  <pre>{block.content}</pre>
+                                </div>
+                              )
+                            }
+                            return (
+                              <p key={`${block.type}-${index}`}>{renderInlinePreview(block.content)}</p>
+                            )
+                          })
+                        ) : (
+                          <p className="preview-empty">Nothing to preview yet.</p>
+                        )}
+                      </div>
+                    ) : editorViewMode === 'rich-text' ? (
+                      <div
+                        ref={richTextEditorRef}
+                        className={`rich-text-editor ${isDragActive ? 'drag-active' : ''}`}
+                        contentEditable
+                        suppressContentEditableWarning
+                        onInput={handleRichTextInput}
+                        onKeyDown={handleRichTextKeyDown}
+                        onDragOver={handleRichTextDragOver}
+                        onDragLeave={handleRichTextDragLeave}
+                        onDrop={(event) => void handleRichTextDrop(event)}
+                      />
+                    ) : (
+                      <textarea
+                        ref={editorTextareaRef}
+                        className={`markdown-editor ${isDragActive ? 'drag-active' : ''}`}
+                        value={editorBody}
+                        onChange={handleEditorBodyChange}
+                        onKeyDown={handleEditorKeyDown}
+                        onDragOver={handleEditorDragOver}
+                        onDragLeave={handleEditorDragLeave}
+                        onDrop={(event) => void handleEditorDrop(event)}
+                        placeholder="Start writing in Markdown..."
+                        spellCheck={false}
+                      />
+                    )}
                   </>
                 ) : (
                   <>
@@ -1073,6 +2492,62 @@ function App() {
                 <span>{knowledgeBaseIndex.message}</span>
                 {knowledgeBaseIndex.initializedNewKnowledgeBase ? (
                   <span>The app initialized a new offline library in the default path.</span>
+                ) : null}
+              </div>
+              <div className="preview-card">
+                <p className="section-label">Note assets</p>
+                <strong>
+                  {selectedNote ? `${noteAssetPreviewItems.length} linked assets` : 'No note selected'}
+                </strong>
+                <span>
+                  {selectedNote
+                    ? 'Drag files into the Markdown editor or use the toolbar to import them.'
+                    : 'Select a note to inspect its linked images and attachments.'}
+                </span>
+                {selectedNote && noteAssetPreviewItems.length > 0 ? (
+                  <div className="asset-reference-list">
+                    {noteAssetPreviewItems.map((asset) => (
+                      <div key={`${asset.kind}:${asset.path}`} className="asset-reference-item">
+                        {asset.previewUrl ? (
+                          <img
+                            className="asset-reference-thumb"
+                            src={asset.previewUrl}
+                            alt={asset.label}
+                          />
+                        ) : (
+                          <div className="asset-reference-placeholder">
+                            {asset.kind === 'image' ? 'IMG' : 'FILE'}
+                          </div>
+                        )}
+                        <strong>{asset.label}</strong>
+                        <span>{asset.kind === 'image' ? 'Image' : 'File'}</span>
+                        <code>{asset.path}</code>
+                        {asset.absolutePath ? <code>{asset.absolutePath}</code> : null}
+                        {asset.absolutePath ? (
+                          <div className="asset-reference-actions">
+                            <button
+                              type="button"
+                              className="ghost-action"
+                              onClick={() => void handleOpenLocalPath(asset.absolutePath, 'open')}
+                            >
+                              Open
+                            </button>
+                            <button
+                              type="button"
+                              className="ghost-action"
+                              onClick={() => void handleOpenLocalPath(asset.absolutePath, 'reveal')}
+                            >
+                              Reveal
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : selectedNote ? (
+                  <div className="empty-directory-state">
+                    No local asset references are linked in this note yet.
+                  </div>
                 ) : null}
               </div>
             </aside>
@@ -1208,22 +2683,50 @@ function App() {
           <section className="inspector-section">
             <p className="section-label">Backlinks</p>
             <div className="stack-list">
-              {backlinks.map((item) => (
-                <button key={item} type="button" className="stack-item subtle">
-                  {item}
-                </button>
-              ))}
+              {noteConnections.backlinks.length > 0 ? (
+                noteConnections.backlinks.map((item) => (
+                  <button
+                    key={item.noteId}
+                    type="button"
+                    className="stack-item subtle"
+                    onClick={() => handleSelectNote(item.noteId)}
+                  >
+                    <span>{item.title}</span>
+                    <strong>{item.relativePath}</strong>
+                  </button>
+                ))
+              ) : (
+                <div className="empty-directory-state">{noteConnectionsStatusMessage}</div>
+              )}
             </div>
           </section>
 
           <section className="inspector-section">
             <p className="section-label">Outgoing links</p>
             <div className="stack-list">
-              {outgoingLinks.map((item) => (
-                <button key={item} type="button" className="stack-item subtle">
-                  {item}
-                </button>
-              ))}
+              {noteConnections.outgoingLinks.length > 0 ? (
+                noteConnections.outgoingLinks.map((item) => (
+                  <button
+                    key={item.noteId}
+                    type="button"
+                    className="stack-item subtle"
+                    onClick={() => handleSelectNote(item.noteId)}
+                  >
+                    <span>{item.title}</span>
+                    <strong>{item.relativePath}</strong>
+                  </button>
+                ))
+              ) : (
+                <div className="empty-directory-state">No resolved wikilinks in this note yet.</div>
+              )}
+              {noteConnections.unresolvedLinks.length > 0 ? (
+                <div className="link-callout">
+                  <strong>Unresolved</strong>
+                  {noteConnections.unresolvedLinks.map((item) => (
+                    <span key={item}>[[{item}]]</span>
+                  ))}
+                </div>
+              ) : null}
             </div>
           </section>
 
