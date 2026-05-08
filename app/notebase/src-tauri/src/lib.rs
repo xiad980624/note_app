@@ -154,6 +154,19 @@ struct NoteConnectionsResponse {
     message: String,
 }
 
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MediaAssetRecord {
+    id: String,
+    file_name: String,
+    relative_asset_path: String,
+    absolute_path: String,
+    kind: String,
+    size_bytes: u64,
+    updated_at_ms: Option<u64>,
+    linked_notes: Vec<NoteLinkReference>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OpenPathResponse {
@@ -658,6 +671,22 @@ fn derive_summary(body: &str) -> String {
     }
 
     "No preview text yet.".to_string()
+}
+
+fn asset_kind_from_path(path: &Path) -> String {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    match extension.as_str() {
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" => "image".to_string(),
+        "pdf" => "pdf".to_string(),
+        "mp4" | "mov" | "webm" | "m4v" => "video".to_string(),
+        "wav" | "mp3" | "m4a" | "aac" => "audio".to_string(),
+        _ => "file".to_string(),
+    }
 }
 
 fn note_updated_at_ms(path: &Path) -> Option<u64> {
@@ -1716,6 +1745,68 @@ fn inspect_note_connections(
 }
 
 #[tauri::command]
+fn list_library_assets(root_path: String) -> Result<Vec<MediaAssetRecord>, String> {
+    let layout = ensure_library_layout(&root_path)?;
+    let parsed_notes = load_parsed_notes(&layout.root_path)?;
+    let mut asset_paths = Vec::new();
+    collect_all_files(Path::new(&layout.assets_root), &mut asset_paths)?;
+
+    let root_path = PathBuf::from(&layout.root_path);
+    let mut assets = Vec::new();
+
+    for asset_path in asset_paths {
+        let relative_asset_path = asset_path
+            .strip_prefix(&root_path)
+            .map_err(|error| {
+                format!(
+                    "Failed to compute relative asset path for {}: {error}",
+                    asset_path.display()
+                )
+            })?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let file_name = asset_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("asset")
+            .to_string();
+
+        let linked_notes = parsed_notes
+            .iter()
+            .filter(|record| {
+                record.body.contains(&file_name) || record.body.contains(&relative_asset_path)
+            })
+            .map(|record| NoteLinkReference {
+                title: record.summary.title.clone(),
+                note_id: record.summary.id.clone(),
+                relative_path: record.summary.relative_path.clone(),
+            })
+            .collect();
+
+        assets.push(MediaAssetRecord {
+            id: relative_asset_path.clone(),
+            file_name,
+            relative_asset_path,
+            absolute_path: asset_path.to_string_lossy().to_string(),
+            kind: asset_kind_from_path(&asset_path),
+            size_bytes: file_size_bytes(&asset_path).unwrap_or(0),
+            updated_at_ms: note_updated_at_ms(&asset_path),
+            linked_notes,
+        });
+    }
+
+    assets.sort_by(|left, right| {
+        right
+            .updated_at_ms
+            .unwrap_or(0)
+            .cmp(&left.updated_at_ms.unwrap_or(0))
+            .then_with(|| left.file_name.cmp(&right.file_name))
+    });
+
+    Ok(assets)
+}
+
+#[tauri::command]
 fn open_local_path(path: String) -> Result<OpenPathResponse, String> {
     let target_path = PathBuf::from(&path);
     if !target_path.exists() {
@@ -1959,6 +2050,7 @@ pub fn run() {
             save_note_document,
             import_asset,
             inspect_note_connections,
+            list_library_assets,
             open_local_path,
             reveal_local_path,
             prepare_sync,

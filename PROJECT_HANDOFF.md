@@ -27,7 +27,10 @@ Current editor branch as of 2026-05-07:
 - `feature/editor-experience`
 
 Current UI redesign pass as of 2026-05-08:
-- keep working on `feature/editor-experience`
+- recent UI work has moved through:
+  - `feature/editor-experience`
+  - `feature/ui-command-palette`
+  - `feature/ui-notes-and-connections`
 - begin converging the product UI toward the standardized Figma desktop shell
 - primary Figma references confirmed in file `s7rHo6PN9iYDmZyqqsJ2st`:
   - `4:567` main workbench / editor shell
@@ -170,9 +173,13 @@ Current UI progress after the first shell pass:
   - main editor workspace shell now follows the standardized continuous-column desktop layout direction
   - first-pass omni-search / command palette is now in place
   - note list density and the right-side connections panel now more closely follow the `4:567` editor layout
+  - graph and media views now live inside the same shell:
+    - `Graph` has a first-pass interactive canvas, filter card, and zoom controls
+    - `Media` has a first-pass asset library grid, metadata sidebar, and note linkage panel
+  - sidebar and top tabs now switch between `Notes`, `Graph`, and `Media`
 - next:
-  - replace the placeholder graph action with the real graph view from `4:376`
-  - build the media page shell from `4:2`
+  - keep polishing the graph and media visual fidelity toward the Figma references
+  - add richer graph behaviors and stronger media filtering / sorting
 
 ## 5. Current code status
 
@@ -218,6 +225,7 @@ Implemented already:
   - `create_note`
   - `load_note_document`
   - `save_note_document`
+  - `list_library_assets`
   - `prepare_sync`
   - `sync_libraries`
 
