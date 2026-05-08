@@ -142,6 +142,12 @@ type MediaAssetRecord = {
   linkedNotes: NoteLinkReference[]
 }
 
+type WikilinkDraft = {
+  query: string
+  start: number
+  end: number
+}
+
 type CommandPaletteItem = {
   id: string
   group: 'recent_notes' | 'tags' | 'actions'
@@ -372,6 +378,25 @@ const updateBodyTitle = (body: string, nextTitle: string) => {
   }
 
   return `# ${safeTitle}\n\n${body}`
+}
+
+const detectOpenWikilink = (body: string, cursor: number) => {
+  const leadingText = body.slice(0, cursor)
+  const start = leadingText.lastIndexOf('[[')
+  if (start === -1) {
+    return null
+  }
+
+  const draft = leadingText.slice(start + 2)
+  if (draft.includes(']]') || draft.includes('\n') || draft.includes('[')) {
+    return null
+  }
+
+  return {
+    query: draft.trim(),
+    start,
+    end: cursor,
+  } satisfies WikilinkDraft
 }
 
 const renderPreviewBlocks = (body: string) => {
@@ -858,6 +883,8 @@ function App() {
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('notes')
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>('all')
   const [graphZoom, setGraphZoom] = useState(1)
+  const [wikilinkDraft, setWikilinkDraft] = useState<WikilinkDraft | null>(null)
+  const [wikilinkIndex, setWikilinkIndex] = useState(0)
   const [editorBody, setEditorBody] = useState('')
   const [lastSavedBody, setLastSavedBody] = useState('')
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
@@ -914,6 +941,23 @@ function App() {
       return asset.kind === mediaFilter
     })
   }, [mediaAssets, mediaFilter])
+  const wikilinkSuggestions = useMemo(() => {
+    if (!wikilinkDraft || editorViewMode !== 'markdown' || workspaceView !== 'notes') {
+      return []
+    }
+
+    const query = wikilinkDraft.query.toLowerCase()
+    return knowledgeBaseIndex.notes
+      .filter((note) => note.id !== selectedNoteId)
+      .filter(
+        (note) =>
+          !query ||
+          note.title.toLowerCase().includes(query) ||
+          note.relativePath.toLowerCase().includes(query) ||
+          note.tags.some((tag) => tag.toLowerCase().includes(query)),
+      )
+      .slice(0, 6)
+  }, [editorViewMode, knowledgeBaseIndex.notes, selectedNoteId, wikilinkDraft, workspaceView])
   const editableTitle = useMemo(() => deriveEditableTitle(editorBody), [editorBody])
   const previewBlocks = useMemo(() => renderPreviewBlocks(editorBody), [editorBody])
   const referencedAssets = useMemo(() => extractReferencedAssets(editorBody), [editorBody])
@@ -1259,6 +1303,44 @@ function App() {
       textarea.setSelectionRange(selectionStart, selectionEnd)
     })
   }, [])
+
+  const syncWikilinkDraft = useCallback(
+    (nextBody: string, selectionStart: number, selectionEnd = selectionStart) => {
+      if (
+        editorViewMode !== 'markdown' ||
+        workspaceView !== 'notes' ||
+        !selectedNoteId ||
+        selectionStart !== selectionEnd
+      ) {
+        setWikilinkDraft(null)
+        setWikilinkIndex(0)
+        return
+      }
+
+      const nextDraft = detectOpenWikilink(nextBody, selectionStart)
+      setWikilinkDraft(nextDraft)
+      setWikilinkIndex(0)
+    },
+    [editorViewMode, selectedNoteId, workspaceView],
+  )
+
+  const insertWikilinkSuggestion = useCallback(
+    (note: RealNoteSummary) => {
+      if (!wikilinkDraft) {
+        return
+      }
+
+      const replacement = `[[${note.title}]]`
+      const nextText =
+        editorBody.slice(0, wikilinkDraft.start) + replacement + editorBody.slice(wikilinkDraft.end)
+      applyEditorBody(nextText)
+      setWikilinkDraft(null)
+      setWikilinkIndex(0)
+      const nextCursor = wikilinkDraft.start + replacement.length
+      applyTextSelection(nextCursor, nextCursor)
+    },
+    [applyEditorBody, applyTextSelection, editorBody, wikilinkDraft],
+  )
 
   const syncMarkdownFromRichTextEditor = useCallback(() => {
     const richTextEditor = richTextEditorRef.current
@@ -1714,9 +1796,39 @@ function App() {
 
   const handleEditorBodyChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
     applyEditorBody(event.target.value)
+    syncWikilinkDraft(event.target.value, event.target.selectionStart, event.target.selectionEnd)
   }
 
   const handleEditorKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (wikilinkDraft && wikilinkSuggestions.length > 0) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        setWikilinkIndex((current) => (current + 1) % wikilinkSuggestions.length)
+        return
+      }
+
+      if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        setWikilinkIndex((current) =>
+          current === 0 ? wikilinkSuggestions.length - 1 : current - 1,
+        )
+        return
+      }
+
+      if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault()
+        insertWikilinkSuggestion(wikilinkSuggestions[wikilinkIndex] ?? wikilinkSuggestions[0])
+        return
+      }
+    }
+
+    if (wikilinkDraft && event.key === 'Escape') {
+      event.preventDefault()
+      setWikilinkDraft(null)
+      setWikilinkIndex(0)
+      return
+    }
+
     if (event.key === 'Tab') {
       event.preventDefault()
       const textarea = event.currentTarget
@@ -1733,6 +1845,7 @@ function App() {
           editorBody.slice(0, selectionStart) + '  ' + editorBody.slice(selectionEnd)
         applyEditorBody(nextText)
         applyTextSelection(selectionStart + 2, selectionStart + 2)
+        syncWikilinkDraft(nextText, selectionStart + 2, selectionStart + 2)
         return
       }
 
@@ -1742,6 +1855,11 @@ function App() {
 
       applyEditorBody(nextSelection.nextBody)
       applyTextSelection(nextSelection.selectionStart, nextSelection.selectionEnd)
+      syncWikilinkDraft(
+        nextSelection.nextBody,
+        nextSelection.selectionStart,
+        nextSelection.selectionEnd,
+      )
     }
   }
 
@@ -2788,18 +2906,64 @@ function App() {
                               onDrop={(event) => void handleRichTextDrop(event)}
                             />
                           ) : (
-                            <textarea
-                              ref={editorTextareaRef}
-                              className={`markdown-editor ${isDragActive ? 'drag-active' : ''}`}
-                              value={editorBody}
-                              onChange={handleEditorBodyChange}
-                              onKeyDown={handleEditorKeyDown}
-                              onDragOver={handleEditorDragOver}
-                              onDragLeave={handleEditorDragLeave}
-                              onDrop={(event) => void handleEditorDrop(event)}
-                              placeholder="Start writing in Markdown..."
-                              spellCheck={false}
-                            />
+                            <div className="markdown-editor-stack">
+                              <textarea
+                                ref={editorTextareaRef}
+                                className={`markdown-editor ${isDragActive ? 'drag-active' : ''}`}
+                                value={editorBody}
+                                onChange={handleEditorBodyChange}
+                                onKeyDown={handleEditorKeyDown}
+                                onClick={(event) =>
+                                  syncWikilinkDraft(
+                                    event.currentTarget.value,
+                                    event.currentTarget.selectionStart,
+                                    event.currentTarget.selectionEnd,
+                                  )
+                                }
+                                onKeyUp={(event) =>
+                                  syncWikilinkDraft(
+                                    event.currentTarget.value,
+                                    event.currentTarget.selectionStart,
+                                    event.currentTarget.selectionEnd,
+                                  )
+                                }
+                                onDragOver={handleEditorDragOver}
+                                onDragLeave={handleEditorDragLeave}
+                                onDrop={(event) => void handleEditorDrop(event)}
+                                placeholder="Start writing in Markdown..."
+                                spellCheck={false}
+                              />
+                              {wikilinkDraft && wikilinkSuggestions.length > 0 ? (
+                                <div className="wikilink-card">
+                                  <div className="wikilink-card-header">
+                                    <strong>Link a note</strong>
+                                    <span>
+                                      {wikilinkDraft.query
+                                        ? `Matches for "${wikilinkDraft.query}"`
+                                        : 'Type to narrow the local note list'}
+                                    </span>
+                                  </div>
+                                  <div className="wikilink-list">
+                                    {wikilinkSuggestions.map((note, index) => (
+                                      <button
+                                        key={note.id}
+                                        type="button"
+                                        className={`wikilink-item ${index === wikilinkIndex ? 'active' : ''}`}
+                                        onMouseEnter={() => setWikilinkIndex(index)}
+                                        onMouseDown={(event) => {
+                                          event.preventDefault()
+                                          insertWikilinkSuggestion(note)
+                                        }}
+                                      >
+                                        <strong>{note.title}</strong>
+                                        <span>{note.relativePath}</span>
+                                      </button>
+                                    ))}
+                                  </div>
+                                  <p className="wikilink-footnote">Enter or Tab inserts the selected note.</p>
+                                </div>
+                              ) : null}
+                            </div>
                           )}
                         </>
                       ) : (
