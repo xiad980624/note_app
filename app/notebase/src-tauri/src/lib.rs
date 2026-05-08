@@ -47,6 +47,8 @@ struct NoteSummary {
     title: String,
     relative_path: String,
     folder: String,
+    document_type: String,
+    notebook: Option<String>,
     summary: String,
     updated_at_ms: Option<u64>,
     tags: Vec<String>,
@@ -118,6 +120,20 @@ struct SyncStatusResponse {
 struct SaveNotePayload {
     note_id: String,
     body: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateNoteTagsPayload {
+    note_id: String,
+    tags: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MoveNotePayload {
+    note_id: String,
+    notebook: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -635,6 +651,19 @@ fn extract_tags(frontmatter: Option<&str>) -> Vec<String> {
         .collect()
 }
 
+fn extract_document_type(frontmatter: Option<&str>) -> String {
+    let value = frontmatter
+        .and_then(|frontmatter| extract_frontmatter_value(frontmatter, "documentType"));
+    normalize_document_type(value)
+}
+
+fn extract_notebook(frontmatter: Option<&str>) -> Option<String> {
+    frontmatter
+        .and_then(|frontmatter| extract_frontmatter_value(frontmatter, "notebook"))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 fn derive_title(frontmatter: Option<&str>, body: &str, fallback: &str) -> String {
     if let Some(frontmatter) = frontmatter {
         if let Some(title) = extract_frontmatter_value(frontmatter, "title") {
@@ -739,6 +768,19 @@ fn slugify_title(title: &str) -> String {
     }
 }
 
+fn normalize_document_type(input: Option<String>) -> String {
+    match input
+        .unwrap_or_else(|| "note".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "todo" | "todolist" => "todo".to_string(),
+        "journal" | "diary" => "journal".to_string(),
+        _ => "note".to_string(),
+    }
+}
+
 fn derive_title_from_body(body: &str, fallback: &str) -> String {
     for line in body.lines() {
         let trimmed = line.trim();
@@ -765,6 +807,11 @@ fn replace_frontmatter_value(lines: &mut Vec<String>, key: &str, value: String) 
     }
 
     lines.push(format!("{key}: {value}"));
+}
+
+fn remove_frontmatter_value(lines: &mut Vec<String>, key: &str) {
+    let prefix = format!("{key}:");
+    lines.retain(|line| !line.trim_start().starts_with(&prefix));
 }
 
 fn has_frontmatter_key(frontmatter: Option<&str>, key: &str) -> bool {
@@ -835,6 +882,69 @@ fn build_note_content(
     )
 }
 
+fn build_note_content_with_metadata(
+    existing_frontmatter: Option<&str>,
+    body: &str,
+    fallback_title: &str,
+    fallback_note_id: &str,
+    timestamp_ms: u64,
+    document_type: Option<String>,
+    notebook: Option<Option<String>>,
+    tags: Option<Vec<String>>,
+) -> String {
+    let mut content = build_note_content(
+        existing_frontmatter,
+        body,
+        fallback_title,
+        fallback_note_id,
+        timestamp_ms,
+    );
+    let (frontmatter, body_after) = parse_frontmatter_block(&content);
+    let mut frontmatter_lines = frontmatter
+        .map(|value| value.lines().map(ToString::to_string).collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    if let Some(next_document_type) = document_type {
+        replace_frontmatter_value(&mut frontmatter_lines, "documentType", next_document_type);
+    }
+
+    if let Some(next_notebook) = notebook {
+        if let Some(value) = next_notebook.filter(|value| !value.trim().is_empty()) {
+            replace_frontmatter_value(&mut frontmatter_lines, "notebook", value);
+        } else {
+            remove_frontmatter_value(&mut frontmatter_lines, "notebook");
+        }
+    }
+
+    if let Some(next_tags) = tags {
+        let normalized_tags = next_tags
+            .into_iter()
+            .map(|tag| tag.trim().to_string())
+            .filter(|tag| !tag.is_empty())
+            .collect::<Vec<_>>();
+        replace_frontmatter_value(
+            &mut frontmatter_lines,
+            "tags",
+            format!("[{}]", normalized_tags.join(", ")),
+        );
+    }
+
+    let normalized_body = body_after.replace("\r\n", "\n");
+    let trimmed_body = normalized_body.trim_end_matches('\n');
+    let body_with_trailing_newline = if trimmed_body.is_empty() {
+        String::new()
+    } else {
+        format!("{trimmed_body}\n")
+    };
+
+    content = format!(
+        "---\n{}\n---\n\n{}",
+        frontmatter_lines.join("\n"),
+        body_with_trailing_newline
+    );
+    content
+}
+
 fn parse_note_summary(path: &Path, notes_root: &Path) -> Result<NoteSummary, String> {
     let content = fs::read_to_string(path)
         .map_err(|error| format!("Failed to read note file {}: {error}", path.display()))?;
@@ -864,6 +974,8 @@ fn parse_note_summary(path: &Path, notes_root: &Path) -> Result<NoteSummary, Str
         title: derive_title(frontmatter, body, file_stem),
         relative_path,
         folder,
+        document_type: extract_document_type(frontmatter),
+        notebook: extract_notebook(frontmatter),
         summary: derive_summary(body),
         updated_at_ms: note_updated_at_ms(path),
         tags: extract_tags(frontmatter),
@@ -1533,16 +1645,44 @@ fn load_library_index(root_path: String) -> Result<KnowledgeBaseIndexResponse, S
 }
 
 #[tauri::command]
-fn create_note(root_path: String) -> Result<CreateNoteResponse, String> {
+fn create_note(
+    root_path: String,
+    notebook: Option<String>,
+    document_type: Option<String>,
+) -> Result<CreateNoteResponse, String> {
     let layout = ensure_library_layout(&root_path)?;
     let timestamp_ms = current_timestamp_ms()?;
     let title = "Untitled note";
     let slug = slugify_title(title);
-    let relative_path = format!("inbox/{}-{}.md", slug, timestamp_ms);
+    let normalized_document_type = normalize_document_type(document_type);
+    let notebook_value = notebook.and_then(|value| {
+        let trimmed = value.trim().to_string();
+        if trimmed.is_empty() { None } else { Some(trimmed) }
+    });
+    let target_folder = match normalized_document_type.as_str() {
+        "todo" => "todo",
+        "journal" => "journal",
+        _ => "note",
+    };
+    let target_notebook_directory = Path::new(&layout.notes_root).join(target_folder);
+    fs::create_dir_all(&target_notebook_directory).map_err(|error| {
+        format!(
+            "Failed to prepare notebook directory {}: {error}",
+            target_notebook_directory.display()
+        )
+    })?;
+    let relative_path = format!("{}/{}-{}.md", target_folder, slug, timestamp_ms);
     let note_path = Path::new(&layout.notes_root).join(&relative_path);
 
-    let content = format!(
-        "---\nid: note-{timestamp_ms}\ntitle: {title}\ncreatedAtMs: {timestamp_ms}\nupdatedAtMs: {timestamp_ms}\ntags: []\n---\n\n# {title}\n\nStart writing...\n"
+    let content = build_note_content_with_metadata(
+        None,
+        "# Untitled note\n\nStart writing...\n",
+        title,
+        &format!("note-{timestamp_ms}"),
+        timestamp_ms,
+        Some(normalized_document_type),
+        Some(notebook_value),
+        Some(Vec::new()),
     );
 
     fs::write(&note_path, content)
@@ -1617,6 +1757,72 @@ fn save_note_document(
         body: body.to_string(),
         message: format!("Saved note content to {}.", saved_relative_path),
     })
+}
+
+#[tauri::command]
+fn update_note_tags(
+    root_path: String,
+    payload: UpdateNoteTagsPayload,
+) -> Result<NoteDocumentResponse, String> {
+    let layout = ensure_library_layout(&root_path)?;
+    let notes_root = Path::new(&layout.notes_root);
+    let note_path = resolve_note_path(notes_root, &payload.note_id)?;
+    let existing_raw_content = fs::read_to_string(&note_path)
+        .map_err(|error| format!("Failed to read note file {}: {error}", note_path.display()))?;
+    let (existing_frontmatter, existing_body) = parse_frontmatter_block(&existing_raw_content);
+    let fallback_title = note_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("Untitled note");
+    let timestamp_ms = current_timestamp_ms()?;
+    let next_content = build_note_content_with_metadata(
+        existing_frontmatter,
+        existing_body,
+        fallback_title,
+        &format!("note-{timestamp_ms}"),
+        timestamp_ms,
+        None,
+        None,
+        Some(payload.tags),
+    );
+
+    fs::write(&note_path, &next_content)
+        .map_err(|error| format!("Failed to save note file {}: {error}", note_path.display()))?;
+
+    load_note_document(root_path, payload.note_id)
+}
+
+#[tauri::command]
+fn move_note_to_notebook(
+    root_path: String,
+    payload: MoveNotePayload,
+) -> Result<NoteDocumentResponse, String> {
+    let layout = ensure_library_layout(&root_path)?;
+    let notes_root = Path::new(&layout.notes_root);
+    let note_path = resolve_note_path(notes_root, &payload.note_id)?;
+    let existing_raw_content = fs::read_to_string(&note_path)
+        .map_err(|error| format!("Failed to read note file {}: {error}", note_path.display()))?;
+    let (existing_frontmatter, existing_body) = parse_frontmatter_block(&existing_raw_content);
+    let fallback_title = note_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("Untitled note");
+    let timestamp_ms = current_timestamp_ms()?;
+    let next_content = build_note_content_with_metadata(
+        existing_frontmatter,
+        existing_body,
+        fallback_title,
+        &format!("note-{timestamp_ms}"),
+        timestamp_ms,
+        None,
+        Some(payload.notebook),
+        None,
+    );
+
+    fs::write(&note_path, &next_content)
+        .map_err(|error| format!("Failed to save note file {}: {error}", note_path.display()))?;
+
+    load_note_document(root_path, payload.note_id)
 }
 
 #[tauri::command]
@@ -2048,6 +2254,8 @@ pub fn run() {
             create_note,
             load_note_document,
             save_note_document,
+            update_note_tags,
+            move_note_to_notebook,
             import_asset,
             inspect_note_connections,
             list_library_assets,
