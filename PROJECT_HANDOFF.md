@@ -26,6 +26,15 @@ Current repository status as of 2026-05-05 after merge:
 Current editor branch as of 2026-05-07:
 - `feature/editor-experience`
 
+Current UI redesign pass as of 2026-05-08:
+- keep working on `feature/editor-experience`
+- begin converging the product UI toward the standardized Figma desktop shell
+- primary Figma references confirmed in file `s7rHo6PN9iYDmZyqqsJ2st`:
+  - `4:567` main workbench / editor shell
+  - `4:376` knowledge graph view
+  - `4:2` media and assets view
+  - `4:226` omni-search / command palette
+
 ## 2. Product direction
 
 This project is a personal note-taking and knowledge base app for:
@@ -37,7 +46,7 @@ Core product goals:
 - Markdown editing and preview
 - Rich text editing
 - Code block editing
-- Simple mac-style UI
+- Quiet, native-feeling desktop UI with a continuous multi-column shell
 - Local-first knowledge base
 - Optional NAS-backed sync
 - Search, links, backlinks, and long-term knowledge accumulation
@@ -118,6 +127,43 @@ Current recommendation:
 Important product insight:
 - The real desired capability is automatic mount recovery on mac
 - It is not necessary to build a full custom WebDAV file client first
+
+## 4.1 UI redesign direction: latest state
+
+Standardized Figma direction now confirmed:
+- the product should move away from the earlier “rounded card prototype” look
+- the app should feel closer to a native desktop workbench
+- the layout should use a continuous shell with column dividers instead of large floating panels
+- page sections should be visually quieter, denser, and more task-oriented
+
+Shared shell pattern across the confirmed Figma views:
+- left navigation rail:
+  - brand
+  - primary `New Note` action
+  - main navigation items
+  - notebooks / collections
+  - footer actions such as settings and trash
+- top app bar inside the content area:
+  - page title
+  - view tabs such as `Notes / Graph / Media`
+  - search / sync / utility actions
+- main working area:
+  - note list
+  - editor or graph or media grid
+  - right contextual sidebar when needed
+
+Confirmed UI implementation principles:
+1. use continuous column layout before polishing component details
+2. prefer borders and spacing over heavy blur, deep shadows, and oversized rounded corners
+3. reserve card surfaces for repeated list items, modals, floating controls, and focused metadata blocks
+4. keep labels compact and information dense enough for repeated daily use
+5. move global actions into app-bar or modal flows instead of inline explanatory panels
+
+Immediate UI refactor sequence:
+1. reshape the main editor page to match the shell from node `4:567`
+2. preserve current editor, sync, and asset features while changing layout
+3. add a real omni-search / command palette flow based on node `4:226`
+4. then build graph and media views inside the same shell using nodes `4:376` and `4:2`
 
 ## 5. Current code status
 

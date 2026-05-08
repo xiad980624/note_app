@@ -26,7 +26,6 @@ const folders = [
   { name: 'Archive' },
 ]
 
-const tags = ['#offline-first', '#sync', '#markdown', '#knowledge-base']
 const SYNC_CONFIG_KEY = 'notebase:sync-config'
 const SELECTED_NOTE_KEY = 'notebase:selected-note-id'
 const INVOKE_TIMEOUT_MS = 12000
@@ -2023,108 +2022,145 @@ function App() {
 
   return (
     <div className="app-shell">
-      <header className="topbar">
-        <div className="traffic-lights" aria-hidden="true">
-          <span className="traffic red" />
-          <span className="traffic yellow" />
-          <span className="traffic green" />
-        </div>
-        <div className="workspace-meta">
-          <p className="eyebrow">Local-first personal knowledge base</p>
-          <h1>NoteBase</h1>
-        </div>
-        <label className="search-field" htmlFor="global-search">
-          <span>Search notes, tags, links</span>
-          <input id="global-search" defaultValue="offline sync markdown" />
-          <kbd>Cmd K</kbd>
-        </label>
-        <div className="topbar-actions">
-          <button
-            type="button"
-            className={`sync-entry sync-entry-${syncButtonTone}`}
-            onClick={handleSyncButtonClick}
-          >
-            <span className="sync-entry-icon" aria-hidden="true">
-              {syncButtonTone === 'warning' ? '!' : syncBusy ? '…' : '↻'}
-            </span>
-            <span>{syncButtonLabel}</span>
-          </button>
-          <div className="status-panel">
-            <span className="status-dot status-dot-mounted" />
-            <div>
-              <p className="status-label">Offline library</p>
-              <strong>Default local path</strong>
-              <span className="status-meta">{localRootPath}</span>
+      <div className="workspace-shell">
+        <aside className="sidebar shell-sidebar">
+          <div className="shell-sidebar-top">
+            <div className="traffic-lights" aria-hidden="true">
+              <span className="traffic red" />
+              <span className="traffic yellow" />
+              <span className="traffic green" />
+            </div>
+
+            <div className="sidebar-brand">
+              <div className="sidebar-brand-mark">N</div>
+              <div className="workspace-meta">
+                <h1>NoteBase</h1>
+                <p>Personal Vault</p>
+              </div>
+            </div>
+
+            <button type="button" className="primary-action" onClick={() => void handleCreateNote()}>
+              + New note
+            </button>
+
+            <nav className="nav-section shell-nav-section" aria-label="Primary navigation">
+              <button type="button" className="nav-item active">
+                <span>Inbox</span>
+                <strong>{knowledgeBaseIndex.notes.length}</strong>
+              </button>
+              <button type="button" className="nav-item">
+                <span>Today</span>
+              </button>
+              <button type="button" className="nav-item">
+                <span>Favorites</span>
+              </button>
+              <button type="button" className="nav-item">
+                <span>Tags</span>
+              </button>
+              <button type="button" className="nav-item">
+                <span>Media</span>
+              </button>
+            </nav>
+
+            <section className="nav-section notebook-nav-section">
+              <div className="section-heading">
+                <p className="section-label">Notebooks</p>
+                <button type="button" className="ghost-action">
+                  Manage
+                </button>
+              </div>
+              <div className="stack-list notebook-stack-list">
+                {folderCounts.map((folder) => (
+                  <button
+                    key={folder.name}
+                    type="button"
+                    className={`stack-item ${folder.active ? 'selected' : ''}`}
+                  >
+                    <span>{folder.name}</span>
+                    <strong>{folder.count}</strong>
+                  </button>
+                ))}
+              </div>
+            </section>
+          </div>
+
+          <div className="shell-sidebar-bottom">
+            <button type="button" className="nav-item">
+              <span>Settings</span>
+            </button>
+            <button type="button" className="nav-item">
+              <span>Trash</span>
+            </button>
+            <div className="sidebar-user-row">
+              <div className="sidebar-user-avatar" aria-hidden="true">
+                N
+              </div>
+              <div>
+                <strong>Local-first</strong>
+                <span>{localRootPath}</span>
+              </div>
             </div>
           </div>
-        </div>
-      </header>
-
-      <main className="workspace-grid">
-        <aside className="sidebar">
-          <button type="button" className="primary-action" onClick={() => void handleCreateNote()}>
-            + New note
-          </button>
-
-          <section className="nav-section">
-            <p className="section-label">Library</p>
-            <button type="button" className="nav-item active">
-              <span>All notes</span>
-              <strong>{knowledgeBaseIndex.notes.length}</strong>
-            </button>
-            <button type="button" className="nav-item">
-              <span>Recent</span>
-              <strong>{Math.min(knowledgeBaseIndex.notes.length, 12)}</strong>
-            </button>
-            <button type="button" className="nav-item">
-              <span>Offline mode</span>
-              <strong>On</strong>
-            </button>
-          </section>
-
-          <section className="nav-section">
-            <div className="section-heading">
-              <p className="section-label">Folders</p>
-              <button type="button" className="ghost-action">
-                Manage
-              </button>
-            </div>
-            <div className="stack-list">
-              {folderCounts.map((folder) => (
-                <button
-                  key={folder.name}
-                  type="button"
-                  className={`stack-item ${folder.active ? 'selected' : ''}`}
-                >
-                  <span>{folder.name}</span>
-                  <strong>{folder.count}</strong>
-                </button>
-              ))}
-            </div>
-          </section>
-
-          <section className="nav-section">
-            <div className="section-heading">
-              <p className="section-label">Tags</p>
-              <button type="button" className="ghost-action">
-                Merge
-              </button>
-            </div>
-            <div className="tag-cloud">
-              {tags.map((tag) => (
-                <button key={tag} type="button" className="tag-chip">
-                  {tag}
-                </button>
-              ))}
-            </div>
-          </section>
         </aside>
+
+        <section className="workspace-main">
+          <header className="workspace-topbar">
+            <div className="workspace-topbar-primary">
+              <div className="workspace-title-block">
+                <h2>Recent Notes</h2>
+                <p>{selectedNote ? selectedNote.relativePath : 'Offline knowledge base'}</p>
+              </div>
+              <nav className="workspace-tabs" aria-label="Workspace views">
+                <button type="button" className="workspace-tab workspace-tab-active">
+                  Notes
+                </button>
+                <button type="button" className="workspace-tab" disabled>
+                  Graph
+                </button>
+                <button type="button" className="workspace-tab" disabled>
+                  Media
+                </button>
+              </nav>
+            </div>
+
+            <div className="workspace-topbar-actions">
+              <label className="search-field search-field-compact" htmlFor="global-search">
+                <span>Search notes, tags, links</span>
+                <input id="global-search" placeholder="Search knowledge..." />
+                <kbd>Cmd K</kbd>
+              </label>
+              <button
+                type="button"
+                className={`sync-entry sync-entry-${syncButtonTone}`}
+                onClick={handleSyncButtonClick}
+              >
+                <span className="sync-entry-icon" aria-hidden="true">
+                  {syncButtonTone === 'warning' ? '!' : syncBusy ? '…' : '↻'}
+                </span>
+                <span>{syncButtonLabel}</span>
+              </button>
+              <div className="workspace-status">
+                <strong>
+                  {saveStatus === 'saved'
+                    ? 'Saved locally'
+                    : saveStatus === 'saving'
+                      ? 'Saving'
+                      : hasUnsavedChanges
+                        ? 'Unsaved changes'
+                        : 'Offline library'}
+                </strong>
+                <span>{selectedNote ? formatRelativeDate(selectedNote.updatedAtMs) : localLibraryMessage}</span>
+              </div>
+            </div>
+          </header>
+
+          <div className="workspace-grid">
 
         <section className="note-list-panel">
           <div className="panel-heading">
             <div>
-              <p className="section-label">Inbox</p>
-              <h2>Offline knowledge base</h2>
+              <p className="section-label">Notes</p>
+              <h2>Recent Notes</h2>
             </div>
             <button
               type="button"
@@ -2557,8 +2593,8 @@ function App() {
         <aside className="inspector-panel">
           <div className="panel-heading">
             <div>
-              <p className="section-label">Context</p>
-              <h2>Local + sync overview</h2>
+              <p className="section-label">Connections</p>
+              <h2>Context & links</h2>
             </div>
             <button type="button" className="ghost-action" onClick={() => setSyncPanelOpen(true)}>
               Sync settings
@@ -2738,7 +2774,9 @@ function App() {
             </div>
           </section>
         </aside>
-      </main>
+          </div>
+        </section>
+      </div>
 
       {syncPanelOpen ? (
         <div className="modal-shell" role="presentation">
