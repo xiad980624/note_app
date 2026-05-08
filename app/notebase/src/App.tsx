@@ -19,13 +19,6 @@ declare global {
   }
 }
 
-const folders = [
-  { name: 'Inbox', active: true },
-  { name: 'Projects' },
-  { name: 'Topics' },
-  { name: 'Archive' },
-]
-
 const SYNC_CONFIG_KEY = 'notebase:sync-config'
 const SELECTED_NOTE_KEY = 'notebase:selected-note-id'
 const INVOKE_TIMEOUT_MS = 12000
@@ -38,12 +31,6 @@ type MarkdownSnippetKind = 'h1' | 'h2' | 'bold' | 'list' | 'quote' | 'code' | 'l
 type AssetImportKind = 'image' | 'file'
 type PreviewBlockType = 'h1' | 'h2' | 'paragraph' | 'quote' | 'list' | 'checklist' | 'code'
 type PreviewBlock = { type: PreviewBlockType; content: string; language?: string }
-type ReferencedAsset = {
-  label: string
-  path: string
-  kind: AssetImportKind
-}
-
 type SyncConfig = {
   profileName: string
   protocol: 'http' | 'https'
@@ -55,21 +42,15 @@ type SyncConfig = {
   remoteLibraryPath: string
 }
 
-type LibraryOverview = {
-  resolvedStoragePath: string
-  exists: boolean
-  readable: boolean
-  directoryCount: number
-  fileCount: number
-  sampleEntries: string[]
-  message: string
-}
+type DocumentType = 'todo' | 'note' | 'journal'
 
 type RealNoteSummary = {
   id: string
   title: string
   relativePath: string
   folder: string
+  documentType: DocumentType
+  notebook: string | null
   summary: string
   updatedAtMs: number | null
   tags: string[]
@@ -130,6 +111,7 @@ type NoteConnections = {
 
 type WorkspaceView = 'notes' | 'graph' | 'media'
 type MediaFilter = 'all' | 'image' | 'pdf' | 'video' | 'file'
+type SettingsTab = 'general' | 'sync'
 
 type MediaAssetRecord = {
   id: string
@@ -156,6 +138,12 @@ type CommandPaletteItem = {
   meta?: string
   run: () => void | Promise<void>
 }
+
+type InspectorTab = 'backlinks' | 'outgoing' | 'tags'
+type LibrarySectionKey = 'todo' | 'note' | 'journal' | 'notebooks'
+type ActiveDirectorySelection =
+  | { kind: 'type'; value: DocumentType }
+  | { kind: 'notebook'; value: string }
 
 type LibrarySnapshot = {
   rootPath: string
@@ -294,30 +282,6 @@ const syncToneFromStatus = (status: SyncStatusResponse, busy: boolean): SyncButt
   return 'idle'
 }
 
-const buildSyncButtonLabel = (status: SyncStatusResponse, busy: boolean) => {
-  if (busy) {
-    return 'Syncing...'
-  }
-
-  if (!status.configured) {
-    return 'Sync !'
-  }
-
-  if (status.status === 'failed') {
-    return 'Sync !'
-  }
-
-  if (status.status === 'conflicted') {
-    return 'Conflicts !'
-  }
-
-  if (status.status === 'decision_required') {
-    return 'Resolve sync'
-  }
-
-  return 'Sync'
-}
-
 const collectLibraryTags = (notes: RealNoteSummary[]) => {
   const seen = new Set<string>()
 
@@ -351,33 +315,271 @@ const formattingTools: Array<{
 
 const commonCodeLanguages = ['plain text', 'ts', 'tsx', 'js', 'jsx', 'rust', 'bash', 'json', 'md']
 
-const deriveEditableTitle = (body: string) => {
-  for (const line of body.split('\n')) {
-    const trimmed = line.trim()
-    if (trimmed.startsWith('# ')) {
-      return trimmed.slice(2).trim() || 'Untitled note'
-    }
-  }
+const documentTypeMeta: Array<{ key: DocumentType; label: string; createLabel: string; icon: string }> = [
+  { key: 'todo', label: 'Todo Lists', createLabel: 'New Todo', icon: 'list' },
+  { key: 'note', label: 'Notes', createLabel: 'New Note', icon: 'notes' },
+  { key: 'journal', label: 'Journal', createLabel: 'New Journal', icon: 'today' },
+]
 
-  return 'Untitled note'
+const navItems = [
+  { key: 'notes', label: 'Notes', shortLabel: 'Notes', icon: 'notes' },
+  { key: 'graph', label: 'Graph', shortLabel: 'Graph', icon: 'graph' },
+  { key: 'media', label: 'Media', shortLabel: 'Media', icon: 'media' },
+] as const
+
+const toolbarIconMap: Record<(typeof formattingTools)[number]['kind'], string> = {
+  h1: 'heading1',
+  h2: 'heading2',
+  bold: 'bold',
+  list: 'list',
+  quote: 'quote',
+  code: 'code',
+  link: 'link',
+  image: 'image',
+  file: 'file',
 }
 
-const updateBodyTitle = (body: string, nextTitle: string) => {
-  const safeTitle = nextTitle.trim() || 'Untitled note'
-  const lines = body.split('\n')
-  const headingIndex = lines.findIndex((line) => line.trim().startsWith('# '))
-
-  if (headingIndex >= 0) {
-    lines[headingIndex] = `# ${safeTitle}`
-    return lines.join('\n')
+function AppIcon({ name, className }: { name: string; className?: string }) {
+  const commonProps = {
+    viewBox: '0 0 20 20',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: '1.7',
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+    className,
+    'aria-hidden': true,
   }
 
-  const normalizedBody = body.trim()
-  if (!normalizedBody) {
-    return `# ${safeTitle}\n\n`
+  switch (name) {
+    case 'plus':
+      return (
+        <svg {...commonProps}>
+          <path d="M10 4.5v11" />
+          <path d="M4.5 10h11" />
+        </svg>
+      )
+    case 'inbox':
+      return (
+        <svg {...commonProps}>
+          <path d="M3.5 7.5h13v7a2 2 0 0 1-2 2h-9a2 2 0 0 1-2-2z" />
+          <path d="M3.5 9.5h3l1.5 2h4l1.5-2h3" />
+        </svg>
+      )
+    case 'notes':
+      return (
+        <svg {...commonProps}>
+          <rect x="4" y="3.8" width="12" height="12.4" rx="2.4" />
+          <path d="M7 7.2h6" />
+          <path d="M7 10h6" />
+          <path d="M7 12.8h4.2" />
+        </svg>
+      )
+    case 'notebook':
+      return (
+        <svg {...commonProps}>
+          <path d="M5 4.5h8.5a2 2 0 0 1 2 2v8.8H7a2 2 0 0 0-2 2z" />
+          <path d="M5 4.5v13" />
+          <path d="M7 7.5h5.5" />
+          <path d="M7 10.5h4.5" />
+        </svg>
+      )
+    case 'today':
+      return (
+        <svg {...commonProps}>
+          <rect x="3.5" y="5" width="13" height="11" rx="2" />
+          <path d="M6.5 3.5v3" />
+          <path d="M13.5 3.5v3" />
+          <path d="M3.5 8.5h13" />
+        </svg>
+      )
+    case 'favorite':
+      return (
+        <svg {...commonProps}>
+          <path d="m10 3.5 1.9 3.9 4.3.6-3.1 3 0.7 4.3-3.8-2-3.8 2 .7-4.3-3.1-3 4.3-.6z" />
+        </svg>
+      )
+    case 'tag':
+      return (
+        <svg {...commonProps}>
+          <path d="M3.5 10.5 10 4h5.5v5.5L9 16z" />
+          <circle cx="12.75" cy="7.25" r="0.8" fill="currentColor" stroke="none" />
+        </svg>
+      )
+    case 'backlink':
+      return (
+        <svg {...commonProps}>
+          <path d="M8 6 4.5 9.5 8 13" />
+          <path d="M5 9.5h5.5a4 4 0 1 1 0 8H8.5" />
+        </svg>
+      )
+    case 'outgoing':
+      return (
+        <svg {...commonProps}>
+          <path d="M12 6 15.5 9.5 12 13" />
+          <path d="M15 9.5H9.5a4 4 0 1 0 0 8H11.5" />
+        </svg>
+      )
+    case 'graph':
+      return (
+        <svg {...commonProps}>
+          <circle cx="5" cy="10" r="1.5" />
+          <circle cx="10" cy="5" r="1.5" />
+          <circle cx="15" cy="11.5" r="1.5" />
+          <path d="M6.2 9 8.8 6.2" />
+          <path d="M11.2 6 13.8 10.2" />
+        </svg>
+      )
+    case 'media':
+      return (
+        <svg {...commonProps}>
+          <rect x="3.5" y="4.5" width="13" height="11" rx="2" />
+          <circle cx="8" cy="8" r="1.2" />
+          <path d="m6 13 2.5-2.5 2 2 2.5-3 1.5 1.5" />
+        </svg>
+      )
+    case 'settings':
+      return (
+        <svg {...commonProps}>
+          <circle cx="10" cy="10" r="2.3" />
+          <path d="M10 3.5v1.5" />
+          <path d="M10 15v1.5" />
+          <path d="M15 10h1.5" />
+          <path d="M3.5 10H5" />
+          <path d="m14.4 5.6 1 1" />
+          <path d="m4.6 15.4 1-1" />
+          <path d="m14.4 14.4 1 1" />
+          <path d="m4.6 4.6 1 1" />
+        </svg>
+      )
+    case 'trash':
+      return (
+        <svg {...commonProps}>
+          <path d="M5.5 6.5h9" />
+          <path d="M8 6.5V5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5" />
+          <path d="m6.5 6.5.7 8a1 1 0 0 0 1 .9h3.6a1 1 0 0 0 1-.9l.7-8" />
+        </svg>
+      )
+    case 'search':
+      return (
+        <svg {...commonProps}>
+          <circle cx="8.5" cy="8.5" r="4.5" />
+          <path d="m12 12 3.5 3.5" />
+        </svg>
+      )
+    case 'write':
+      return (
+        <svg {...commonProps}>
+          <path d="M4.8 14.8 14.2 5.4a1.6 1.6 0 1 1 2.3 2.3l-9.4 9.4-3 .7z" />
+          <path d="m12.8 6.8 2.4 2.4" />
+        </svg>
+      )
+    case 'preview':
+      return (
+        <svg {...commonProps}>
+          <path d="M2.8 10s2.6-4.6 7.2-4.6 7.2 4.6 7.2 4.6-2.6 4.6-7.2 4.6S2.8 10 2.8 10z" />
+          <circle cx="10" cy="10" r="2.2" />
+        </svg>
+      )
+    case 'chevronLeft':
+      return (
+        <svg {...commonProps}>
+          <path d="m11.8 4.8-5.3 5.2 5.3 5.2" />
+        </svg>
+      )
+    case 'chevronRight':
+      return (
+        <svg {...commonProps}>
+          <path d="m8.2 4.8 5.3 5.2-5.3 5.2" />
+        </svg>
+      )
+    case 'sync':
+      return (
+        <svg {...commonProps}>
+          <path d="M15 7.5A5 5 0 0 0 6.2 6" />
+          <path d="M15 4.8v2.7h-2.7" />
+          <path d="M5 12.5A5 5 0 0 0 13.8 14" />
+          <path d="M5 15.2v-2.7h2.7" />
+        </svg>
+      )
+    case 'heading1':
+      return (
+        <svg {...commonProps}>
+          <path d="M4.5 5v10" />
+          <path d="M10 5v10" />
+          <path d="M4.5 10h5.5" />
+          <path d="M14.5 7.5h1.8v8" />
+        </svg>
+      )
+    case 'heading2':
+      return (
+        <svg {...commonProps}>
+          <path d="M4.5 5v10" />
+          <path d="M10 5v10" />
+          <path d="M4.5 10h5.5" />
+          <path d="M13.8 8.2a1.8 1.8 0 0 1 3.2 1.1c0 2-3.2 2.3-3.2 4.7h3.2" />
+        </svg>
+      )
+    case 'bold':
+      return (
+        <svg {...commonProps}>
+          <path d="M6 4.5h4a2.5 2.5 0 1 1 0 5H6z" />
+          <path d="M6 9.5h4.7a2.7 2.7 0 1 1 0 5.5H6z" />
+        </svg>
+      )
+    case 'list':
+      return (
+        <svg {...commonProps}>
+          <path d="M7 6h8" />
+          <path d="M7 10h8" />
+          <path d="M7 14h8" />
+          <circle cx="4.5" cy="6" r="0.7" fill="currentColor" stroke="none" />
+          <circle cx="4.5" cy="10" r="0.7" fill="currentColor" stroke="none" />
+          <circle cx="4.5" cy="14" r="0.7" fill="currentColor" stroke="none" />
+        </svg>
+      )
+    case 'quote':
+      return (
+        <svg {...commonProps}>
+          <path d="M6 8h3v3H6z" />
+          <path d="M11 8h3v3h-3z" />
+          <path d="M6 11.5c0 2 .8 3 2.5 3" />
+          <path d="M11 11.5c0 2 .8 3 2.5 3" />
+        </svg>
+      )
+    case 'code':
+      return (
+        <svg {...commonProps}>
+          <path d="m7.5 6-3 4 3 4" />
+          <path d="m12.5 6 3 4-3 4" />
+        </svg>
+      )
+    case 'link':
+      return (
+        <svg {...commonProps}>
+          <path d="M8 12 6.5 13.5a2.2 2.2 0 1 1-3.1-3.1L5 8.8" />
+          <path d="M12 8 13.5 6.5a2.2 2.2 0 1 1 3.1 3.1L15 11.2" />
+          <path d="m7 13 6-6" />
+        </svg>
+      )
+    case 'image':
+      return (
+        <svg {...commonProps}>
+          <rect x="3.5" y="4.5" width="13" height="11" rx="2" />
+          <circle cx="8" cy="8" r="1.2" />
+          <path d="m6 13 2.5-2.5 2 2 2.5-3 1.5 1.5" />
+        </svg>
+      )
+    case 'file':
+      return (
+        <svg {...commonProps}>
+          <path d="M6 3.5h5l3 3V16.5h-8a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z" />
+          <path d="M11 3.5v3h3" />
+        </svg>
+      )
+    default:
+      return null
   }
-
-  return `# ${safeTitle}\n\n${body}`
 }
 
 const detectOpenWikilink = (body: string, cursor: number) => {
@@ -715,40 +917,6 @@ const htmlToMarkdown = (html: string) => {
   return lines.join('\n\n').trimEnd()
 }
 
-const extractReferencedAssets = (body: string): ReferencedAsset[] => {
-  const pattern = /(!)?\[([^\]]*)\]\(([^)]+)\)/g
-  const assets: ReferencedAsset[] = []
-  const seen = new Set<string>()
-
-  for (const match of body.matchAll(pattern)) {
-    const isImage = Boolean(match[1])
-    const label = match[2]?.trim() || 'Attachment'
-    const rawPath = match[3]?.trim() || ''
-    if (
-      !rawPath ||
-      rawPath.startsWith('http://') ||
-      rawPath.startsWith('https://') ||
-      rawPath.startsWith('mailto:')
-    ) {
-      continue
-    }
-
-    const uniqueKey = `${isImage ? 'image' : 'file'}:${rawPath}`
-    if (seen.has(uniqueKey)) {
-      continue
-    }
-
-    seen.add(uniqueKey)
-    assets.push({
-      label,
-      path: rawPath,
-      kind: isImage ? 'image' : 'file',
-    })
-  }
-
-  return assets
-}
-
 const detectCodeFenceContext = (body: string, selectionStart: number, selectionEnd: number) => {
   const textBeforeSelection = body.slice(0, selectionStart)
   const openingFences = textBeforeSelection.match(/^```.*$/gm) ?? []
@@ -763,44 +931,6 @@ const detectCodeFenceContext = (body: string, selectionStart: number, selectionE
     lineStart,
     lineEnd,
   }
-}
-
-const joinPathSegments = (...segments: string[]) =>
-  segments
-    .filter(Boolean)
-    .join('/')
-    .replace(/\/+/g, '/')
-
-const dirnameOfPath = (path: string) => {
-  const normalized = path.replace(/\/+/g, '/').replace(/\/$/, '')
-  const lastSlashIndex = normalized.lastIndexOf('/')
-  if (lastSlashIndex <= 0) {
-    return ''
-  }
-  return normalized.slice(0, lastSlashIndex)
-}
-
-const resolveRelativeAssetPath = (basePath: string, relativePath: string) => {
-  if (!relativePath || relativePath.startsWith('http://') || relativePath.startsWith('https://')) {
-    return relativePath
-  }
-
-  const baseSegments = basePath.split('/').filter(Boolean)
-  const relativeSegments = relativePath.split('/').filter(Boolean)
-  const outputSegments = [...baseSegments]
-
-  for (const segment of relativeSegments) {
-    if (segment === '.') {
-      continue
-    }
-    if (segment === '..') {
-      outputSegments.pop()
-      continue
-    }
-    outputSegments.push(segment)
-  }
-
-  return `/${outputSegments.join('/')}`
 }
 
 const indentSelectedLines = (body: string, selectionStart: number, selectionEnd: number) => {
@@ -853,15 +983,6 @@ function App() {
   const [localLibraryMessage, setLocalLibraryMessage] = useState(
     'Preparing the default offline knowledge base path.',
   )
-  const [libraryOverview, setLibraryOverview] = useState<LibraryOverview>({
-    resolvedStoragePath: BROWSER_LOCAL_PATH_PLACEHOLDER,
-    exists: false,
-    readable: false,
-    directoryCount: 0,
-    fileCount: 0,
-    sampleEntries: [],
-    message: 'Waiting for the offline knowledge base path.',
-  })
   const [knowledgeBaseIndex, setKnowledgeBaseIndex] = useState<KnowledgeBaseIndex>({
     rootPath: BROWSER_LOCAL_PATH_PLACEHOLDER,
     notesRoot: `${BROWSER_LOCAL_PATH_PLACEHOLDER}/notes`,
@@ -883,19 +1004,35 @@ function App() {
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('notes')
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>('all')
   const [graphZoom, setGraphZoom] = useState(1)
+  const [expandedSections, setExpandedSections] = useState<Record<LibrarySectionKey, boolean>>({
+    todo: true,
+    note: true,
+    journal: true,
+    notebooks: true,
+  })
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>('backlinks')
+  const [activeDirectorySelection, setActiveDirectorySelection] = useState<ActiveDirectorySelection>({
+    kind: 'type',
+    value: 'note',
+  })
+  const [pendingTags, setPendingTags] = useState('')
+  const [noteMenuState, setNoteMenuState] = useState<{
+    noteId: string
+    x: number
+    y: number
+  } | null>(null)
   const [wikilinkDraft, setWikilinkDraft] = useState<WikilinkDraft | null>(null)
   const [wikilinkIndex, setWikilinkIndex] = useState(0)
   const [editorBody, setEditorBody] = useState('')
   const [lastSavedBody, setLastSavedBody] = useState('')
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
   const [saveMessage, setSaveMessage] = useState('Select a note to start editing.')
-  const [editorViewMode, setEditorViewMode] = useState<EditorViewMode>('markdown')
+  const [editorViewMode, setEditorViewMode] = useState<EditorViewMode>('rich-text')
   const [syncConfig, setSyncConfig] = useState<SyncConfig | null>(() => loadStoredSyncConfig())
   const [draftSyncConfig, setDraftSyncConfig] = useState<SyncConfig>(() => loadStoredSyncConfig() ?? emptySyncConfig)
   const [syncStatus, setSyncStatus] = useState<SyncStatusResponse>(
     emptySyncStatus('Sync has not been configured. Offline mode is active.'),
   )
-  const [syncPanelOpen, setSyncPanelOpen] = useState(false)
   const [decisionPanelOpen, setDecisionPanelOpen] = useState(false)
   const [syncBusy, setSyncBusy] = useState(false)
   const [isDragActive, setIsDragActive] = useState(false)
@@ -903,6 +1040,8 @@ function App() {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [commandPaletteQuery, setCommandPaletteQuery] = useState('')
   const [commandPaletteIndex, setCommandPaletteIndex] = useState(0)
+  const [settingsPanelOpen, setSettingsPanelOpen] = useState(false)
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('general')
   const [noteConnections, setNoteConnections] = useState<NoteConnections>({
     outgoingLinks: [],
     backlinks: [],
@@ -915,16 +1054,48 @@ function App() {
   const runningInTauri = useMemo(() => isTauriRuntime(), [])
   const hasUnsavedChanges = selectedNoteDocument ? editorBody !== lastSavedBody : false
   const syncButtonTone = syncToneFromStatus(syncStatus, syncBusy)
-  const syncButtonLabel = buildSyncButtonLabel(syncStatus, syncBusy)
   const editorTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const richTextEditorRef = useRef<HTMLDivElement | null>(null)
   const assetPickerRef = useRef<HTMLInputElement | null>(null)
   const commandPaletteInputRef = useRef<HTMLInputElement | null>(null)
   const commandPaletteItemsRef = useRef<CommandPaletteItem[]>([])
   const pendingSelectionRef = useRef<{ start: number; end: number }>({ start: 0, end: 0 })
+  const notesByType = useMemo(() => {
+    const groups: Record<DocumentType, RealNoteSummary[]> = {
+      todo: [],
+      note: [],
+      journal: [],
+    }
+    for (const note of knowledgeBaseIndex.notes) {
+      groups[note.documentType ?? 'note'].push(note)
+    }
+    return groups
+  }, [knowledgeBaseIndex.notes])
+  const notebookList = useMemo(() => {
+    const counts = new Map<string, number>()
+
+    for (const note of knowledgeBaseIndex.notes) {
+      const notebookName = note.notebook?.trim()
+      if (notebookName) {
+        counts.set(notebookName, (counts.get(notebookName) ?? 0) + 1)
+      }
+    }
+
+    return Array.from(counts.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((left, right) => left.name.localeCompare(right.name))
+  }, [knowledgeBaseIndex.notes])
+  const visibleNotes = useMemo(() => {
+    if (activeDirectorySelection.kind === 'type') {
+      return notesByType[activeDirectorySelection.value]
+    }
+
+    return knowledgeBaseIndex.notes.filter((note) => note.notebook === activeDirectorySelection.value)
+  }, [activeDirectorySelection, knowledgeBaseIndex.notes, notesByType])
   const selectedNote =
+    visibleNotes.find((note) => note.id === selectedNoteId) ??
     knowledgeBaseIndex.notes.find((note) => note.id === selectedNoteId) ??
-    knowledgeBaseIndex.notes[0] ??
+    visibleNotes[0] ??
     null
   const selectedMediaAsset =
     mediaAssets.find((asset) => asset.id === selectedMediaAssetId) ?? mediaAssets[0] ?? null
@@ -958,33 +1129,7 @@ function App() {
       )
       .slice(0, 6)
   }, [editorViewMode, knowledgeBaseIndex.notes, selectedNoteId, wikilinkDraft, workspaceView])
-  const editableTitle = useMemo(() => deriveEditableTitle(editorBody), [editorBody])
   const previewBlocks = useMemo(() => renderPreviewBlocks(editorBody), [editorBody])
-  const referencedAssets = useMemo(() => extractReferencedAssets(editorBody), [editorBody])
-  const noteAssetPreviewItems = useMemo(() => {
-    if (!selectedNote) {
-      return []
-    }
-
-    const noteRootRelativePath = joinPathSegments('notes', selectedNote.relativePath)
-    const noteDirectoryRelativePath = dirnameOfPath(noteRootRelativePath)
-
-    return referencedAssets.map((asset) => {
-      const resolvedRootRelativePath = resolveRelativeAssetPath(noteDirectoryRelativePath, asset.path)
-      const absolutePath = resolvedRootRelativePath
-        ? joinPathSegments(localRootPath, resolvedRootRelativePath)
-        : ''
-
-      return {
-        ...asset,
-        absolutePath,
-        previewUrl:
-          runningInTauri && asset.kind === 'image' && absolutePath
-            ? convertFileSrc(absolutePath)
-            : null,
-      }
-    })
-  }, [localRootPath, referencedAssets, runningInTauri, selectedNote])
   const [assetPickerKind, setAssetPickerKind] = useState<AssetImportKind>('image')
   const libraryTags = useMemo(() => collectLibraryTags(knowledgeBaseIndex.notes), [knowledgeBaseIndex.notes])
   const noteConnectionsStatusMessage = !selectedNote
@@ -1026,15 +1171,6 @@ function App() {
 
   const refreshLocalWorkspace = useCallback(async (rootPath: string) => {
     if (!runningInTauri) {
-      setLibraryOverview({
-        resolvedStoragePath: BROWSER_LOCAL_PATH_PLACEHOLDER,
-        exists: false,
-        readable: false,
-        directoryCount: 0,
-        fileCount: 0,
-        sampleEntries: [],
-        message: 'Browser preview detected. Offline path scanning runs in the Tauri desktop app.',
-      })
       setKnowledgeBaseIndex({
         rootPath: BROWSER_LOCAL_PATH_PLACEHOLDER,
         notesRoot: `${BROWSER_LOCAL_PATH_PLACEHOLDER}/notes`,
@@ -1047,12 +1183,8 @@ function App() {
       return
     }
 
-    const [overviewResponse, indexResponse] = await Promise.all([
-      invokeWithTimeout<LibraryOverview>('inspect_library', { rootPath }),
-      invokeWithTimeout<KnowledgeBaseIndex>('load_library_index', { rootPath }),
-    ])
+    const indexResponse = await invokeWithTimeout<KnowledgeBaseIndex>('load_library_index', { rootPath })
 
-    setLibraryOverview(overviewResponse)
     setKnowledgeBaseIndex(indexResponse)
     setSelectedNoteId((current) => {
       if (current && indexResponse.notes.some((note) => note.id === current)) {
@@ -1107,6 +1239,7 @@ function App() {
       setSelectedNoteDocument(response)
       setEditorBody(response.body)
       setLastSavedBody(response.body)
+      setPendingTags(response.note.tags.join(', '))
       setSaveStatus('idle')
       setSaveMessage(response.message)
     } catch (error) {
@@ -1287,10 +1420,6 @@ function App() {
     },
     [lastSavedBody, selectedNoteDocument],
   )
-
-  const handleTitleChange = (event: ChangeEvent<HTMLInputElement>) => {
-    applyEditorBody(updateBodyTitle(editorBody, event.target.value))
-  }
 
   const applyTextSelection = useCallback((selectionStart: number, selectionEnd: number) => {
     const textarea = editorTextareaRef.current
@@ -1653,43 +1782,6 @@ function App() {
       syncMarkdownFromRichTextEditor,
     ],
   )
-
-  const handleEditorDragOver = (event: React.DragEvent<HTMLTextAreaElement>) => {
-    if (editorViewMode !== 'markdown' || !selectedNote) {
-      return
-    }
-
-    event.preventDefault()
-    setIsDragActive(true)
-  }
-
-  const handleEditorDragLeave = (event: React.DragEvent<HTMLTextAreaElement>) => {
-    if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
-      return
-    }
-
-    setIsDragActive(false)
-  }
-
-  const handleEditorDrop = async (event: React.DragEvent<HTMLTextAreaElement>) => {
-    if (editorViewMode !== 'markdown' || !selectedNote) {
-      return
-    }
-
-    event.preventDefault()
-    setIsDragActive(false)
-
-    const files = Array.from(event.dataTransfer.files)
-    if (files.length === 0) {
-      return
-    }
-
-    pendingSelectionRef.current = {
-      start: event.currentTarget.selectionStart,
-      end: event.currentTarget.selectionEnd,
-    }
-    await importAssetFiles(files)
-  }
 
   const handleRichTextInput = () => {
     syncMarkdownFromRichTextEditor()
@@ -2123,7 +2215,7 @@ function App() {
     setSelectedNoteId(noteId)
   }, [hasUnsavedChanges, selectedNoteId])
 
-  const handleCreateNote = useCallback(async () => {
+  const handleCreateNote = useCallback(async (documentType: DocumentType = 'note') => {
     if (
       hasUnsavedChanges &&
       !window.confirm('You have unsaved changes in the current note. Create a new note anyway?')
@@ -2140,9 +2232,11 @@ function App() {
     try {
       const response = await invokeWithTimeout<CreateNoteResponse>('create_note', {
         rootPath: localRootPath,
+        documentType,
       })
       await refreshLocalWorkspace(localRootPath)
       await refreshMediaAssets(localRootPath)
+      setActiveDirectorySelection({ kind: 'type', value: documentType })
       setSelectedNoteId(response.note.id)
       setSaveStatus('saved')
       setSaveMessage(response.message)
@@ -2172,7 +2266,7 @@ function App() {
   const handleConnectSync = async () => {
     setSyncConfig(draftSyncConfig)
     await assessSyncReadiness(localRootPath, draftSyncConfig)
-    setSyncPanelOpen(false)
+    setSettingsPanelOpen(false)
   }
 
   const handleRunSyncWithOptions = useCallback(async (
@@ -2180,7 +2274,8 @@ function App() {
     allowInitialOverride = false,
   ) => {
     if (!syncConfig) {
-      setSyncPanelOpen(true)
+      setSettingsTab('sync')
+      setSettingsPanelOpen(true)
       return
     }
 
@@ -2214,13 +2309,15 @@ function App() {
   const handleSyncButtonClick = useCallback(() => {
     if (!syncConfig) {
       setDraftSyncConfig(syncConfig ?? emptySyncConfig)
-      setSyncPanelOpen(true)
+      setSettingsTab('sync')
+      setSettingsPanelOpen(true)
       return
     }
 
     if (syncStatus.status === 'failed') {
       setDraftSyncConfig(syncConfig)
-      setSyncPanelOpen(true)
+      setSettingsTab('sync')
+      setSettingsPanelOpen(true)
       return
     }
 
@@ -2235,9 +2332,76 @@ function App() {
         'Remote sync configuration was removed. The app will continue scanning the local offline library.',
       ),
     )
-    setSyncPanelOpen(false)
+    setSettingsPanelOpen(false)
     setDecisionPanelOpen(false)
   }
+
+  const openSettingsPanel = useCallback((tab: SettingsTab = 'general') => {
+    setSettingsTab(tab)
+    setSettingsPanelOpen(true)
+  }, [])
+
+  const toggleSection = useCallback((section: LibrarySectionKey) => {
+    setExpandedSections((current) => ({
+      ...current,
+      [section]: !current[section],
+    }))
+  }, [])
+
+  const handleMoveNoteToNotebook = useCallback(async (noteId: string, notebook: string | null) => {
+    if (!runningInTauri) {
+      return
+    }
+
+    try {
+      await invokeWithTimeout<NoteDocument>('move_note_to_notebook', {
+        rootPath: localRootPath,
+        payload: {
+          noteId,
+          notebook,
+        },
+      })
+      await refreshLocalWorkspace(localRootPath)
+      setNoteMenuState(null)
+      setSaveStatus('saved')
+      setSaveMessage(notebook ? `Moved note to ${notebook}.` : 'Removed note from notebook.')
+      if (activeDirectorySelection.kind === 'notebook' && notebook !== activeDirectorySelection.value) {
+        setActiveDirectorySelection({ kind: 'type', value: 'note' })
+      }
+    } catch (error) {
+      setSaveStatus('error')
+      setSaveMessage(error instanceof Error ? error.message : 'Failed to move the selected note.')
+    }
+  }, [activeDirectorySelection, localRootPath, refreshLocalWorkspace, runningInTauri])
+
+  const handleSaveTags = useCallback(async () => {
+    if (!selectedNote || !runningInTauri) {
+      return
+    }
+
+    const tags = pendingTags
+      .split(',')
+      .map((tag) => tag.trim())
+      .filter(Boolean)
+
+    try {
+      const response = await invokeWithTimeout<NoteDocument>('update_note_tags', {
+        rootPath: localRootPath,
+        payload: {
+          noteId: selectedNote.id,
+          tags,
+        },
+      })
+      setSelectedNoteDocument(response)
+      setPendingTags(response.note.tags.join(', '))
+      await refreshLocalWorkspace(localRootPath)
+      setSaveStatus('saved')
+      setSaveMessage(response.message)
+    } catch (error) {
+      setSaveStatus('error')
+      setSaveMessage(error instanceof Error ? error.message : 'Failed to update note tags.')
+    }
+  }, [localRootPath, pendingTags, refreshLocalWorkspace, runningInTauri, selectedNote])
 
   const openCommandPalette = useCallback(() => {
     setCommandPaletteOpen(true)
@@ -2313,7 +2477,7 @@ function App() {
             handleSyncButtonClick()
           } else {
             setDraftSyncConfig(emptySyncConfig)
-            setSyncPanelOpen(true)
+            openSettingsPanel('sync')
           }
         },
       },
@@ -2362,6 +2526,7 @@ function App() {
     knowledgeBaseIndex.notes,
     libraryTags,
     navigateToView,
+    openSettingsPanel,
     syncConfig,
   ])
 
@@ -2403,7 +2568,10 @@ function App() {
 
   const viewMeta = {
     notes: {
-      title: 'Recent Notes',
+      title:
+        activeDirectorySelection.kind === 'type'
+          ? documentTypeMeta.find((item) => item.key === activeDirectorySelection.value)?.label ?? 'Notes'
+          : activeDirectorySelection.value,
       subtitle: selectedNote ? selectedNote.relativePath : 'Offline knowledge base',
       searchPlaceholder: 'Search notes, tags, links',
     },
@@ -2419,108 +2587,89 @@ function App() {
     },
   } as const
 
-  const folderCounts = folders.map((folder) => ({
-    ...folder,
-    count: knowledgeBaseIndex.notes.filter((note) =>
-      note.folder.toLowerCase().startsWith(folder.name.toLowerCase()),
-    ).length,
-  }))
   const activeCommandPaletteItem = commandPaletteItems[commandPaletteIndex] ?? null
   const selectedNoteTags = selectedNote?.tags.slice(0, 6) ?? []
 
   return (
     <div className="app-shell">
       <div className="workspace-shell">
-        <aside className="sidebar shell-sidebar">
+        <aside className="sidebar shell-sidebar shell-sidebar-collapsed">
           <div className="shell-sidebar-top">
-            <div className="traffic-lights" aria-hidden="true">
-              <span className="traffic red" />
-              <span className="traffic yellow" />
-              <span className="traffic green" />
-            </div>
-
             <div className="sidebar-brand">
               <div className="sidebar-brand-mark">N</div>
-              <div className="workspace-meta">
-                <h1>NoteBase</h1>
-                <p>Personal Vault</p>
-              </div>
             </div>
 
-            <button type="button" className="primary-action" onClick={() => void handleCreateNote()}>
-              + New note
-            </button>
-
-            <nav className="nav-section shell-nav-section" aria-label="Primary navigation">
-              <button
-                type="button"
-                className={`nav-item ${workspaceView === 'notes' ? 'active' : ''}`}
-                onClick={() => navigateToView('notes')}
-              >
-                <span>Inbox</span>
-                <strong>{knowledgeBaseIndex.notes.length}</strong>
-              </button>
-              <button type="button" className="nav-item">
-                <span>Today</span>
-              </button>
-              <button type="button" className="nav-item">
-                <span>Favorites</span>
-              </button>
-              <button type="button" className="nav-item">
-                <span>Tags</span>
-              </button>
-              <button
-                type="button"
-                className={`nav-item ${workspaceView === 'graph' ? 'active' : ''}`}
-                onClick={() => navigateToView('graph')}
-              >
-                <span>Graph</span>
-              </button>
-              <button
-                type="button"
-                className={`nav-item ${workspaceView === 'media' ? 'active' : ''}`}
-                onClick={() => navigateToView('media')}
-              >
-                <span>Media</span>
-              </button>
+            <nav className="nav-section shell-nav-section" aria-label="Create document types">
+              {documentTypeMeta.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  className="nav-item nav-item-collapsed"
+                  onClick={() => void handleCreateNote(item.key)}
+                  title={item.createLabel}
+                >
+                  <span className="nav-item-main">
+                    <AppIcon name={item.icon} className="nav-icon" />
+                  </span>
+                </button>
+              ))}
             </nav>
 
-            <section className="nav-section notebook-nav-section">
-              <div className="section-heading">
-                <p className="section-label">Notebooks</p>
-                <button type="button" className="ghost-action">
-                  Manage
-                </button>
-              </div>
-              <div className="stack-list notebook-stack-list">
-                {folderCounts.map((folder) => (
+            <nav className="nav-section shell-nav-section" aria-label="Primary navigation">
+              {navItems.map((item) => {
+                const isActive =
+                  (item.key === 'notes' && workspaceView === 'notes') ||
+                  (item.key === 'graph' && workspaceView === 'graph') ||
+                  (item.key === 'media' && workspaceView === 'media')
+                const handleClick =
+                  item.key === 'notes'
+                    ? () => navigateToView('notes')
+                    : item.key === 'graph'
+                      ? () => navigateToView('graph')
+                      : item.key === 'media'
+                        ? () => navigateToView('media')
+                        : undefined
+
+                return (
                   <button
-                    key={folder.name}
+                    key={item.key}
                     type="button"
-                    className={`stack-item ${folder.active ? 'selected' : ''}`}
+                    className={`nav-item nav-item-collapsed ${isActive ? 'active' : ''}`}
+                    onClick={handleClick}
+                    title={item.label}
                   >
-                    <span>{folder.name}</span>
-                    <strong>{folder.count}</strong>
+                    <span className="nav-item-main">
+                      <AppIcon name={item.icon} className="nav-icon" />
+                    </span>
                   </button>
-                ))}
-              </div>
-            </section>
+                )
+              })}
+            </nav>
           </div>
 
           <div className="shell-sidebar-bottom">
-            <button type="button" className="nav-item">
-              <span>Settings</span>
+            <button
+              type="button"
+              className="nav-item nav-item-collapsed"
+              onClick={() => openSettingsPanel('general')}
+              title="Settings"
+            >
+              <span className="nav-item-main">
+                <AppIcon name="settings" className="nav-icon" />
+              </span>
             </button>
-            <button type="button" className="nav-item">
-              <span>Trash</span>
+            <button
+              type="button"
+              className="nav-item nav-item-collapsed"
+              title="Trash"
+            >
+              <span className="nav-item-main">
+                <AppIcon name="trash" className="nav-icon" />
+              </span>
             </button>
-            <div className="sidebar-user-row">
+            <div className="sidebar-user-row sidebar-user-row-collapsed">
               <div className="sidebar-user-avatar" aria-hidden="true">
                 N
-              </div>
-              <div>
-                <strong>Local-first</strong>
-                <span>{localRootPath}</span>
               </div>
             </div>
           </div>
@@ -2564,24 +2713,25 @@ function App() {
                 htmlFor="global-search"
                 onClick={openCommandPalette}
               >
-                <span>{viewMeta[workspaceView].searchPlaceholder}</span>
+                <AppIcon name="search" className="search-field-icon" />
                 <input
                   id="global-search"
                   placeholder={viewMeta[workspaceView].searchPlaceholder}
                   readOnly
                   onFocus={openCommandPalette}
                 />
-                <kbd>Cmd K</kbd>
+                <kbd>⌘K</kbd>
               </label>
               <button
                 type="button"
                 className={`sync-entry sync-entry-${syncButtonTone}`}
                 onClick={handleSyncButtonClick}
+                title={syncStatus.message}
               >
-                <span className="sync-entry-icon" aria-hidden="true">
-                  {syncButtonTone === 'warning' ? '!' : syncBusy ? '…' : '↻'}
+                <span className="sync-entry-icon-wrap" aria-hidden="true">
+                  <AppIcon name="sync" className={`sync-entry-icon ${syncBusy ? 'sync-entry-icon-spinning' : ''}`} />
+                  {syncButtonTone === 'warning' ? <span className="sync-entry-badge">!</span> : null}
                 </span>
-                <span>{syncButtonLabel}</span>
               </button>
               <div className="workspace-status">
                 <strong>
@@ -2601,134 +2751,140 @@ function App() {
           {workspaceView === 'notes' ? (
             <div className="workspace-grid">
               <section className="note-list-panel">
-                <div className="panel-heading">
-                  <div>
-                    <p className="section-label">Notes</p>
-                    <h2>Recent Notes</h2>
-                  </div>
-                  <button
-                    type="button"
-                    className="ghost-action"
-                    onClick={() => void refreshLocalWorkspace(localRootPath)}
-                  >
-                    Refresh
-                  </button>
-                </div>
-                <div className="note-list-subheading">
-                  <span>{knowledgeBaseIndex.notes.length} indexed notes</span>
-                  <span>Offline-first local library</span>
-                </div>
+                <div className="directory-tree">
+                  {documentTypeMeta.map((section) => {
+                    const notes = notesByType[section.key]
+                    const isExpanded = expandedSections[section.key]
+                    const isActiveSection =
+                      activeDirectorySelection.kind === 'type' && activeDirectorySelection.value === section.key
 
-                <div className="note-list">
-                  {knowledgeBaseIndex.notes.length > 0 ? (
-                    knowledgeBaseIndex.notes.map((note) => (
-                      <button
-                        key={note.id}
-                        type="button"
-                        className={`note-card ${selectedNote?.id === note.id ? 'active' : ''}`}
-                        onClick={() => handleSelectNote(note.id)}
-                      >
-                        <div className="note-card-top">
-                          <strong>{note.title}</strong>
-                        </div>
-                        <p className="note-card-summary">{note.summary || 'No summary yet.'}</p>
-                        <div className="note-card-footer">
-                          <span className="note-chip">{note.tags[0] ?? note.folder.toUpperCase()}</span>
-                          <span className="note-time">{formatRelativeDate(note.updatedAtMs)}</span>
-                        </div>
-                      </button>
-                    ))
-                  ) : (
-                    <div className="empty-note-state">
-                      <strong>
-                        {knowledgeBaseIndex.initializedNewKnowledgeBase
-                          ? 'New local knowledge base created'
-                          : 'No markdown notes yet'}
-                      </strong>
-                      <p>{knowledgeBaseIndex.message}</p>
-                      <span>
-                        The app always scans the default offline path first: <code>{localRootPath}</code>.
+                    return (
+                      <div key={section.key} className="directory-section">
+                        <button
+                          type="button"
+                          className={`directory-section-toggle ${isActiveSection ? 'directory-section-toggle-active' : ''}`}
+                          onClick={() => {
+                            setActiveDirectorySelection({ kind: 'type', value: section.key })
+                            toggleSection(section.key)
+                          }}
+                        >
+                          <span className="directory-section-main">
+                            <AppIcon name={section.icon} className="stack-item-icon" />
+                            <span>{section.label}</span>
+                          </span>
+                          <span className="directory-section-meta">{isExpanded ? '−' : notes.length}</span>
+                        </button>
+                        {isExpanded ? (
+                          <div className="directory-entry-list">
+                            {notes.length > 0 ? (
+                              notes.map((note) => (
+                                <button
+                                  key={note.id}
+                                  type="button"
+                                  className={`directory-entry ${selectedNote?.id === note.id ? 'directory-entry-active' : ''}`}
+                                  onClick={() => handleSelectNote(note.id)}
+                                  onContextMenu={(event) => {
+                                    event.preventDefault()
+                                    setNoteMenuState({
+                                      noteId: note.id,
+                                      x: event.clientX,
+                                      y: event.clientY,
+                                    })
+                                  }}
+                                >
+                                  <span>{note.title}</span>
+                                </button>
+                              ))
+                            ) : (
+                              <div className="empty-directory-state">No {section.label.toLowerCase()} yet.</div>
+                            )}
+                          </div>
+                        ) : null}
+                      </div>
+                    )
+                  })}
+
+                  <div className="directory-section">
+                    <button
+                      type="button"
+                      className={`directory-section-toggle ${
+                        activeDirectorySelection.kind === 'notebook' ? 'directory-section-toggle-active' : ''
+                      }`}
+                      onClick={() => toggleSection('notebooks')}
+                    >
+                      <span className="directory-section-main">
+                        <AppIcon name="notebook" className="stack-item-icon" />
+                        <span>Notebooks</span>
                       </span>
-                      <span>
-                        If this folder started empty, NoteBase already initialized the local knowledge
-                        base shape for you.
+                      <span className="directory-section-meta">
+                        {expandedSections.notebooks ? '−' : notebookList.length}
                       </span>
-                    </div>
-                  )}
+                    </button>
+                    {expandedSections.notebooks ? (
+                      <div className="directory-entry-list">
+                        {notebookList.length > 0 ? (
+                          notebookList.map((notebook) => (
+                            <div key={notebook.name} className="directory-notebook-block">
+                              <button
+                                type="button"
+                                className={`directory-entry ${
+                                  activeDirectorySelection.kind === 'notebook' &&
+                                  activeDirectorySelection.value === notebook.name
+                                    ? 'directory-entry-active'
+                                    : ''
+                                }`}
+                                onClick={() =>
+                                  setActiveDirectorySelection({ kind: 'notebook', value: notebook.name })
+                                }
+                              >
+                                <span>{notebook.name}</span>
+                                <strong>{notebook.count}</strong>
+                              </button>
+                              {activeDirectorySelection.kind === 'notebook' &&
+                              activeDirectorySelection.value === notebook.name ? (
+                                <div className="directory-entry-sublist">
+                                  {visibleNotes.map((note) => (
+                                    <button
+                                      key={note.id}
+                                      type="button"
+                                      className={`directory-entry directory-entry-leaf ${
+                                        selectedNote?.id === note.id ? 'directory-entry-active' : ''
+                                      }`}
+                                      onClick={() => handleSelectNote(note.id)}
+                                      onContextMenu={(event) => {
+                                        event.preventDefault()
+                                        setNoteMenuState({
+                                          noteId: note.id,
+                                          x: event.clientX,
+                                          y: event.clientY,
+                                        })
+                                      }}
+                                    >
+                                      <span>{note.title}</span>
+                                    </button>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+                          ))
+                        ) : (
+                          <div className="empty-directory-state">No notebooks assigned yet.</div>
+                        )}
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               </section>
 
               <section className="editor-panel">
-                <div className="editor-header">
-                  <div>
-                    <p className="section-label">Draft</p>
-                    {selectedNote ? (
-                      <input
-                        className="editor-title-input"
-                        value={editableTitle}
-                        onChange={handleTitleChange}
-                        placeholder="Untitled note"
-                      />
-                    ) : (
-                      <h2>No note selected</h2>
-                    )}
-                  </div>
-                  <div className="editor-actions">
-                    <div className={`save-indicator save-indicator-${saveStatus}`}>
-                      <strong>
-                        {saveStatus === 'saving'
-                          ? 'Saving'
-                          : saveStatus === 'saved'
-                            ? 'Saved'
-                            : saveStatus === 'dirty'
-                              ? 'Unsaved'
-                              : saveStatus === 'error'
-                                ? 'Save issue'
-                                : 'Ready'}
-                      </strong>
-                      <span>{saveMessage}</span>
-                    </div>
-                    <div className="view-switcher" role="tablist" aria-label="Editor mode">
-                      <button
-                        type="button"
-                        className={`view-pill ${editorViewMode === 'markdown' ? 'active' : ''}`}
-                        onClick={() => setEditorViewMode('markdown')}
-                      >
-                        Markdown
-                      </button>
-                      <button
-                        type="button"
-                        className={`view-pill ${editorViewMode === 'rich-text' ? 'active' : ''}`}
-                        onClick={() => setEditorViewMode('rich-text')}
-                      >
-                        Rich text
-                      </button>
-                      <button
-                        type="button"
-                        className={`view-pill ${editorViewMode === 'preview' ? 'active' : ''}`}
-                        onClick={() => setEditorViewMode('preview')}
-                      >
-                        Preview
-                      </button>
-                    </div>
-                    <button
-                      type="button"
-                      className="save-action"
-                      disabled={!selectedNote || saveStatus === 'saving' || !hasUnsavedChanges}
-                      onClick={() => void handleSaveNote('manual')}
-                    >
-                      Save
-                    </button>
-                  </div>
-                </div>
-
                 <div className="toolbar">
                   {formattingTools.map((tool) => (
                     <button
                       key={tool.label}
                       type="button"
                       className="tool-button"
-                      title={tool.shortcut}
+                      title={`${tool.label} • ${tool.shortcut}`}
+                      aria-label={tool.label}
                       disabled={!selectedNote || editorViewMode === 'preview'}
                       onClick={() => {
                         if (tool.kind === 'image' || tool.kind === 'file') {
@@ -2749,10 +2905,34 @@ function App() {
                         void insertMarkdownSnippet(tool.kind)
                       }}
                     >
-                      <span>{tool.label}</span>
-                      <kbd>{tool.shortcut}</kbd>
+                      <AppIcon name={toolbarIconMap[tool.kind]} className="tool-icon" />
                     </button>
                   ))}
+                  <div className="toolbar-spacer" />
+                  <button
+                    type="button"
+                    className={`tool-button ${editorViewMode === 'preview' ? 'tool-button-active' : ''}`}
+                    title={editorViewMode === 'preview' ? 'Write' : 'Preview'}
+                    aria-label={editorViewMode === 'preview' ? 'Write' : 'Preview'}
+                    onClick={() =>
+                      setEditorViewMode((current) => (current === 'preview' ? 'rich-text' : 'preview'))
+                    }
+                  >
+                    <AppIcon
+                      name={editorViewMode === 'preview' ? 'write' : 'preview'}
+                      className="tool-icon"
+                    />
+                  </button>
+                  <button
+                    type="button"
+                    className="tool-button"
+                    title={saveMessage}
+                    aria-label="Save"
+                    disabled={!selectedNote || saveStatus === 'saving' || !hasUnsavedChanges}
+                    onClick={() => void handleSaveNote('manual')}
+                  >
+                    <AppIcon name="sync" className={`tool-icon ${saveStatus === 'saving' ? 'sync-entry-icon-spinning' : ''}`} />
+                  </button>
                 </div>
                 {codeLanguageMenuOpen ? (
                   <div className="code-language-card">
@@ -2790,250 +2970,157 @@ function App() {
                 />
 
                 <div className="editor-body">
-                  <article className="editor-surface">
-                    <p className="meta-line">
-                      {selectedNote
-                        ? `${selectedNote.relativePath} • ${selectedNote.format} • local root ${localRootPath}`
-                        : `Offline knowledge base root • ${localRootPath}`}
-                    </p>
-                    <div className="writing-block">
-                      {selectedNote ? (
-                        <>
-                          <p>## Offline editing flow</p>
-                          <p>{saveMessage || selectedNoteDocument?.message || selectedNote.summary}</p>
-                          <p>- Relative path: {selectedNote.relativePath}</p>
-                          <p>- Folder: {selectedNote.folder}</p>
-                          <p>- Updated: {formatRelativeDate(selectedNote.updatedAtMs)}</p>
-                          <p>
-                            - Tags:{' '}
-                            {selectedNote.tags.length > 0 ? selectedNote.tags.join(', ') : 'No tags yet'}
-                          </p>
-                          <p>### Storage model</p>
-                          <p>
-                            The local offline library is the primary working copy. Sync only moves notes
-                            and assets between the local library and the remote target when you ask for it.
-                          </p>
-                          <div className="editor-caption-row">
-                            <p>
-                              {editorViewMode === 'preview'
-                                ? '### Markdown preview'
-                                : editorViewMode === 'rich-text'
-                                  ? '### Rich text mode'
-                                  : '### Markdown body'}
-                            </p>
-                            <span>
-                              {editorViewMode === 'preview'
-                                ? 'Preview updates from the current local draft'
-                                : hasUnsavedChanges
-                                  ? 'Cmd/Ctrl+S to save locally'
-                                  : 'Saved locally'}
-                            </span>
-                          </div>
-                          {editorViewMode === 'preview' ? (
-                            <div className="markdown-preview">
-                              {previewBlocks.length > 0 ? (
-                                previewBlocks.map((block, index) => {
-                                  if (block.type === 'h1') {
-                                    return <h1 key={`${block.type}-${index}`}>{renderInlinePreview(block.content)}</h1>
-                                  }
-                                  if (block.type === 'h2') {
-                                    return <h2 key={`${block.type}-${index}`}>{renderInlinePreview(block.content)}</h2>
-                                  }
-                                  if (block.type === 'quote') {
-                                    return (
-                                      <blockquote key={`${block.type}-${index}`}>
-                                        {renderInlinePreview(block.content)}
-                                      </blockquote>
-                                    )
-                                  }
-                                  if (block.type === 'list') {
-                                    return (
-                                      <ul key={`${block.type}-${index}`}>
-                                        {block.content.split('\n').map((item) => (
-                                          <li key={item}>{renderInlinePreview(item)}</li>
-                                        ))}
-                                      </ul>
-                                    )
-                                  }
-                                  if (block.type === 'checklist') {
-                                    return (
-                                      <ul key={`${block.type}-${index}`} className="preview-checklist">
-                                        {block.content.split('\n').map((item) => {
-                                          const [checkedFlag, label] = item.split('|')
-                                          return (
-                                            <li key={item}>
-                                              <input type="checkbox" checked={checkedFlag === '1'} readOnly />
-                                              <span>{renderInlinePreview(label)}</span>
-                                            </li>
-                                          )
-                                        })}
-                                      </ul>
-                                    )
-                                  }
-                                  if (block.type === 'code') {
-                                    return (
-                                      <div key={`${block.type}-${index}`} className="preview-code-block">
-                                        <div className="preview-code-header">
-                                          <span>{block.language || 'plain text'}</span>
-                                          <button
-                                            type="button"
-                                            className="ghost-action"
-                                            onClick={() => void handleCopyText(block.content, 'code block')}
-                                          >
-                                            Copy
-                                          </button>
-                                        </div>
-                                        <pre>{block.content}</pre>
-                                      </div>
-                                    )
-                                  }
-                                  return <p key={`${block.type}-${index}`}>{renderInlinePreview(block.content)}</p>
-                                })
-                              ) : (
-                                <p className="preview-empty">Nothing to preview yet.</p>
-                              )}
-                            </div>
-                          ) : editorViewMode === 'rich-text' ? (
-                            <div
-                              ref={richTextEditorRef}
-                              className={`rich-text-editor ${isDragActive ? 'drag-active' : ''}`}
-                              contentEditable
-                              suppressContentEditableWarning
-                              onInput={handleRichTextInput}
-                              onKeyDown={handleRichTextKeyDown}
-                              onDragOver={handleRichTextDragOver}
-                              onDragLeave={handleRichTextDragLeave}
-                              onDrop={(event) => void handleRichTextDrop(event)}
-                            />
-                          ) : (
-                            <div className="markdown-editor-stack">
-                              <textarea
-                                ref={editorTextareaRef}
-                                className={`markdown-editor ${isDragActive ? 'drag-active' : ''}`}
-                                value={editorBody}
-                                onChange={handleEditorBodyChange}
-                                onKeyDown={handleEditorKeyDown}
-                                onClick={(event) =>
-                                  syncWikilinkDraft(
-                                    event.currentTarget.value,
-                                    event.currentTarget.selectionStart,
-                                    event.currentTarget.selectionEnd,
-                                  )
-                                }
-                                onKeyUp={(event) =>
-                                  syncWikilinkDraft(
-                                    event.currentTarget.value,
-                                    event.currentTarget.selectionStart,
-                                    event.currentTarget.selectionEnd,
-                                  )
-                                }
-                                onDragOver={handleEditorDragOver}
-                                onDragLeave={handleEditorDragLeave}
-                                onDrop={(event) => void handleEditorDrop(event)}
-                                placeholder="Start writing in Markdown..."
-                                spellCheck={false}
-                              />
-                              {wikilinkDraft && wikilinkSuggestions.length > 0 ? (
-                                <div className="wikilink-card">
-                                  <div className="wikilink-card-header">
-                                    <strong>Link a note</strong>
-                                    <span>
-                                      {wikilinkDraft.query
-                                        ? `Matches for "${wikilinkDraft.query}"`
-                                        : 'Type to narrow the local note list'}
-                                    </span>
-                                  </div>
-                                  <div className="wikilink-list">
-                                    {wikilinkSuggestions.map((note, index) => (
-                                      <button
-                                        key={note.id}
-                                        type="button"
-                                        className={`wikilink-item ${index === wikilinkIndex ? 'active' : ''}`}
-                                        onMouseEnter={() => setWikilinkIndex(index)}
-                                        onMouseDown={(event) => {
-                                          event.preventDefault()
-                                          insertWikilinkSuggestion(note)
-                                        }}
-                                      >
-                                        <strong>{note.title}</strong>
-                                        <span>{note.relativePath}</span>
-                                      </button>
+                  <article className="editor-surface editor-surface-writing">
+                    {selectedNote ? (
+                      editorViewMode === 'preview' ? (
+                        <div className="markdown-preview">
+                          {previewBlocks.length > 0 ? (
+                            previewBlocks.map((block, index) => {
+                              if (block.type === 'h1') {
+                                return <h1 key={`${block.type}-${index}`}>{renderInlinePreview(block.content)}</h1>
+                              }
+                              if (block.type === 'h2') {
+                                return <h2 key={`${block.type}-${index}`}>{renderInlinePreview(block.content)}</h2>
+                              }
+                              if (block.type === 'quote') {
+                                return (
+                                  <blockquote key={`${block.type}-${index}`}>
+                                    {renderInlinePreview(block.content)}
+                                  </blockquote>
+                                )
+                              }
+                              if (block.type === 'list') {
+                                return (
+                                  <ul key={`${block.type}-${index}`}>
+                                    {block.content.split('\n').map((item) => (
+                                      <li key={item}>{renderInlinePreview(item)}</li>
                                     ))}
+                                  </ul>
+                                )
+                              }
+                              if (block.type === 'checklist') {
+                                return (
+                                  <ul key={`${block.type}-${index}`} className="preview-checklist">
+                                    {block.content.split('\n').map((item) => {
+                                      const [checkedFlag, label] = item.split('|')
+                                      return (
+                                        <li key={item}>
+                                          <input type="checkbox" checked={checkedFlag === '1'} readOnly />
+                                          <span>{renderInlinePreview(label)}</span>
+                                        </li>
+                                      )
+                                    })}
+                                  </ul>
+                                )
+                              }
+                              if (block.type === 'code') {
+                                return (
+                                  <div key={`${block.type}-${index}`} className="preview-code-block">
+                                    <div className="preview-code-header">
+                                      <span>{block.language || 'plain text'}</span>
+                                      <button
+                                        type="button"
+                                        className="ghost-action"
+                                        onClick={() => void handleCopyText(block.content, 'code block')}
+                                      >
+                                        Copy
+                                      </button>
+                                    </div>
+                                    <pre>{block.content}</pre>
                                   </div>
-                                  <p className="wikilink-footnote">Enter or Tab inserts the selected note.</p>
-                                </div>
-                              ) : null}
-                            </div>
+                                )
+                              }
+                              return <p key={`${block.type}-${index}`}>{renderInlinePreview(block.content)}</p>
+                            })
+                          ) : (
+                            <p className="preview-empty">Nothing to preview yet.</p>
                           )}
-                        </>
+                        </div>
                       ) : (
-                        <>
-                          <p>## Default offline path</p>
-                          <p>{localLibraryMessage}</p>
-                          <p>- Knowledge base root: {knowledgeBaseIndex.rootPath}</p>
-                          <p>- Notes root: {knowledgeBaseIndex.notesRoot}</p>
-                          <p>- Assets root: {knowledgeBaseIndex.assetsRoot}</p>
-                          <p>- App metadata: {knowledgeBaseIndex.hiddenRoot}</p>
-                        </>
-                      )}
-                    </div>
-                    <div className="code-block">
-                      <div className="code-block-top">
-                        <span>ts</span>
-                        <button type="button">Copy</button>
+                        <div className="writer-stack">
+                          <div
+                            ref={richTextEditorRef}
+                            className={`rich-text-editor rich-text-editor-writing ${isDragActive ? 'drag-active' : ''}`}
+                            contentEditable
+                            suppressContentEditableWarning
+                            onInput={handleRichTextInput}
+                            onKeyDown={handleRichTextKeyDown}
+                            onDragOver={handleRichTextDragOver}
+                            onDragLeave={handleRichTextDragLeave}
+                            onDrop={(event) => void handleRichTextDrop(event)}
+                          />
+                          <textarea
+                            ref={editorTextareaRef}
+                            className="markdown-editor-assist"
+                            value={editorBody}
+                            onChange={handleEditorBodyChange}
+                            onKeyDown={handleEditorKeyDown}
+                            onClick={(event) =>
+                              syncWikilinkDraft(
+                                event.currentTarget.value,
+                                event.currentTarget.selectionStart,
+                                event.currentTarget.selectionEnd,
+                              )
+                            }
+                            onKeyUp={(event) =>
+                              syncWikilinkDraft(
+                                event.currentTarget.value,
+                                event.currentTarget.selectionStart,
+                                event.currentTarget.selectionEnd,
+                              )
+                            }
+                            spellCheck={false}
+                            aria-hidden="true"
+                            tabIndex={-1}
+                          />
+                          {wikilinkDraft && wikilinkSuggestions.length > 0 ? (
+                            <div className="wikilink-card">
+                              <div className="wikilink-card-header">
+                                <strong>Link a note</strong>
+                                <span>
+                                  {wikilinkDraft.query
+                                    ? `Matches for "${wikilinkDraft.query}"`
+                                    : 'Type to narrow the local note list'}
+                                </span>
+                              </div>
+                              <div className="wikilink-list">
+                                {wikilinkSuggestions.map((note, index) => (
+                                  <button
+                                    key={note.id}
+                                    type="button"
+                                    className={`wikilink-item ${index === wikilinkIndex ? 'active' : ''}`}
+                                    onMouseEnter={() => setWikilinkIndex(index)}
+                                    onMouseDown={(event) => {
+                                      event.preventDefault()
+                                      insertWikilinkSuggestion(note)
+                                    }}
+                                  >
+                                    <strong>{note.title}</strong>
+                                    <span>{note.relativePath}</span>
+                                  </button>
+                                ))}
+                              </div>
+                              <p className="wikilink-footnote">Enter or Tab inserts the selected note.</p>
+                            </div>
+                          ) : null}
+                        </div>
+                      )
+                    ) : (
+                      <div className="editor-empty-state">
+                        <strong>No note selected</strong>
+                        <p>{localLibraryMessage}</p>
                       </div>
-                      <pre>{`const workspace = {\n  localRootPath: "${knowledgeBaseIndex.rootPath}",\n  notesRoot: "${knowledgeBaseIndex.notesRoot}",\n  assetsRoot: "${knowledgeBaseIndex.assetsRoot}",\n  syncConfigured: ${syncConfig ? 'true' : 'false'},\n  syncState: "${syncStatus.status}",\n  selectedNote: "${selectedNote?.relativePath ?? '(none)'}",\n}`}</pre>
-                    </div>
+                    )}
                   </article>
-
-                  <aside className="preview-surface">
-                    <p className="section-label">Preview snapshot</p>
-                    <div className="preview-card">
-                      <h3>Default local behavior</h3>
-                      <ul>
-                        <li>Open the offline library first</li>
-                        <li>Keep editing available even when the NAS is unavailable</li>
-                        <li>Use sync only when you intentionally connect a remote target</li>
-                      </ul>
-                    </div>
-                    <div className={`preview-card soft sync-preview-card sync-preview-card-${syncButtonTone}`}>
-                      <p className="section-label">Sync state</p>
-                      <strong>{syncConfig ? syncConfig.profileName : 'Not configured'}</strong>
-                      <span>{syncStatus.message}</span>
-                    </div>
-                    <div className="preview-card">
-                      <p className="section-label">Offline library directory</p>
-                      <strong>
-                        {libraryOverview.readable
-                          ? `${libraryOverview.directoryCount} folders • ${libraryOverview.fileCount} files`
-                          : 'Directory unavailable'}
-                      </strong>
-                      <span>{libraryOverview.message}</span>
-                    </div>
-                    <div className="preview-card">
-                      <p className="section-label">Note assets</p>
-                      <strong>
-                        {selectedNote ? `${noteAssetPreviewItems.length} linked assets` : 'No note selected'}
-                      </strong>
-                      <span>
-                        {selectedNote
-                          ? 'Drag files into the editor or use the toolbar to import them.'
-                          : 'Select a note to inspect its linked images and attachments.'}
-                      </span>
-                    </div>
-                  </aside>
                 </div>
               </section>
 
               <aside className="inspector-panel">
                 <div className="panel-heading">
                   <div>
-                    <p className="section-label">Connections</p>
-                    <h2>{selectedNote ? 'Note context' : 'Connections'}</h2>
+                    <p className="section-label">Knowledge graph</p>
+                    <h2>{selectedNote ? 'Note map' : 'Graph view'}</h2>
                   </div>
-                  <button type="button" className="ghost-action" onClick={() => setSyncPanelOpen(true)}>
-                    Sync settings
-                  </button>
                 </div>
 
                 <section className="inspector-section">
@@ -3051,94 +3138,127 @@ function App() {
                 </section>
 
                 <section className="inspector-section">
-                  <p className="section-label">Backlinks</p>
-                  <div className="connection-card-list">
-                    {noteConnections.backlinks.length > 0 ? (
-                      noteConnections.backlinks.map((item) => (
-                        <button
-                          key={item.noteId}
-                          type="button"
-                          className="connection-card"
-                          onClick={() => handleSelectNote(item.noteId)}
-                        >
-                          <strong>{item.title}</strong>
-                          <span>{item.relativePath}</span>
-                        </button>
-                      ))
-                    ) : (
-                      <div className="empty-directory-state">{noteConnectionsStatusMessage}</div>
-                    )}
+                  <div className="inspector-tab-row" role="tablist" aria-label="Knowledge graph context">
+                    <button
+                      type="button"
+                      className={`inspector-tab ${inspectorTab === 'backlinks' ? 'inspector-tab-active' : ''}`}
+                      onClick={() => setInspectorTab('backlinks')}
+                      title="Backlinks"
+                    >
+                      <AppIcon name="backlink" className="tool-icon" />
+                    </button>
+                    <button
+                      type="button"
+                      className={`inspector-tab ${inspectorTab === 'outgoing' ? 'inspector-tab-active' : ''}`}
+                      onClick={() => setInspectorTab('outgoing')}
+                      title="Outgoing links"
+                    >
+                      <AppIcon name="outgoing" className="tool-icon" />
+                    </button>
+                    <button
+                      type="button"
+                      className={`inspector-tab ${inspectorTab === 'tags' ? 'inspector-tab-active' : ''}`}
+                      onClick={() => setInspectorTab('tags')}
+                      title="Tags"
+                      aria-label="Tags"
+                    >
+                      <AppIcon name="tag" className="tool-icon" />
+                    </button>
                   </div>
-                </section>
-
-                <section className="inspector-section">
-                  <p className="section-label">Outgoing links</p>
-                  <div className="connection-card-list">
-                    {noteConnections.outgoingLinks.length > 0 ? (
-                      noteConnections.outgoingLinks.map((item) => (
-                        <button
-                          key={item.noteId}
-                          type="button"
-                          className="connection-card"
-                          onClick={() => handleSelectNote(item.noteId)}
-                        >
-                          <strong>{item.title}</strong>
-                          <span>{item.relativePath}</span>
-                        </button>
-                      ))
-                    ) : (
-                      <div className="empty-directory-state">No resolved wikilinks in this note yet.</div>
-                    )}
-                    {noteConnections.unresolvedLinks.length > 0 ? (
-                      <div className="link-callout">
-                        <strong>Unresolved</strong>
-                        {noteConnections.unresolvedLinks.map((item) => (
-                          <span key={item}>[[{item}]]</span>
-                        ))}
+                  {inspectorTab === 'backlinks' ? (
+                    <div className="inspector-tab-panel">
+                      <div className="inspector-subsection">
+                        <p className="section-label">Backlinks</p>
+                        <div className="connection-card-list">
+                          {noteConnections.backlinks.length > 0 ? (
+                            noteConnections.backlinks.map((item) => (
+                              <button
+                                key={item.noteId}
+                                type="button"
+                                className="connection-card"
+                                onClick={() => handleSelectNote(item.noteId)}
+                              >
+                                <strong>{item.title}</strong>
+                                <span>{item.relativePath}</span>
+                              </button>
+                            ))
+                          ) : (
+                            <div className="empty-directory-state">{noteConnectionsStatusMessage}</div>
+                          )}
+                        </div>
                       </div>
-                    ) : null}
-                  </div>
-                </section>
-
-                <section className="inspector-section">
-                  <p className="section-label">Related tags</p>
-                  {selectedNoteTags.length > 0 ? (
-                    <div className="related-tag-list">
-                      {selectedNoteTags.map((tag) => (
-                        <span key={tag} className="related-tag-chip">
-                          {tag}
-                        </span>
-                      ))}
+                    </div>
+                  ) : inspectorTab === 'outgoing' ? (
+                    <div className="inspector-tab-panel">
+                      <div className="inspector-subsection">
+                        <p className="section-label">Outgoing links</p>
+                        <div className="connection-card-list">
+                          {noteConnections.outgoingLinks.length > 0 ? (
+                            noteConnections.outgoingLinks.map((item) => (
+                              <button
+                                key={item.noteId}
+                                type="button"
+                                className="connection-card"
+                                onClick={() => handleSelectNote(item.noteId)}
+                              >
+                                <strong>{item.title}</strong>
+                                <span>{item.relativePath}</span>
+                              </button>
+                            ))
+                          ) : (
+                            <div className="empty-directory-state">No resolved wikilinks in this note yet.</div>
+                          )}
+                          {noteConnections.unresolvedLinks.length > 0 ? (
+                            <div className="link-callout">
+                              <strong>Unresolved</strong>
+                              {noteConnections.unresolvedLinks.map((item) => (
+                                <span key={item}>[[{item}]]</span>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
                     </div>
                   ) : (
-                    <div className="empty-directory-state">No tags on this note yet.</div>
+                    <div className="inspector-tab-panel">
+                      <div className="inspector-subsection">
+                        <p className="section-label inspector-section-label-with-icon">
+                          <AppIcon name="tag" className="tool-icon" />
+                          <span>Tags</span>
+                        </p>
+                        {selectedNote ? (
+                          <>
+                            {selectedNoteTags.length > 0 ? (
+                              <div className="related-tag-list">
+                                {selectedNoteTags.map((tag) => (
+                                  <span key={tag} className="related-tag-chip">
+                                    {tag}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="empty-directory-state">No tags on this note yet.</div>
+                            )}
+                            <label className="config-field full-span">
+                              <span>Edit tags</span>
+                              <input
+                                value={pendingTags}
+                                onChange={(event) => setPendingTags(event.target.value)}
+                                placeholder="design, reference, weekly"
+                              />
+                            </label>
+                            <div className="inline-actions">
+                              <button type="button" className="save-action" onClick={() => void handleSaveTags()}>
+                                Save Tags
+                              </button>
+                            </div>
+                          </>
+                        ) : (
+                          <div className="empty-directory-state">Select a note to manage tags.</div>
+                        )}
+                      </div>
+                    </div>
                   )}
-                </section>
-
-                <section className="inspector-section">
-                  <div className={`sync-summary-card sync-summary-card-${syncButtonTone}`}>
-                    <div className="section-heading">
-                      <p className="section-label">Remote sync</p>
-                      <button
-                        type="button"
-                        className="ghost-action"
-                        onClick={() => {
-                          if (syncConfig) {
-                            setDraftSyncConfig(syncConfig)
-                          }
-                          setSyncPanelOpen(true)
-                        }}
-                      >
-                        {syncConfig ? 'Manage' : 'Configure'}
-                      </button>
-                    </div>
-                    <strong>{syncConfig ? syncConfig.profileName : 'Remote sync not configured'}</strong>
-                    <p>{syncStatus.message}</p>
-                    <div className="directory-stats">
-                      <span>{syncStatus.localSnapshot?.noteCount ?? knowledgeBaseIndex.notes.length} local notes</span>
-                      <span>{syncStatus.remoteSnapshot?.noteCount ?? 0} remote notes</span>
-                    </div>
-                  </div>
                 </section>
               </aside>
             </div>
@@ -3469,91 +3589,199 @@ function App() {
         </div>
       ) : null}
 
-      {syncPanelOpen ? (
-        <div className="modal-shell" role="presentation">
-          <div className="modal-card">
+      {noteMenuState ? (
+        <div className="context-menu-shell" role="presentation" onClick={() => setNoteMenuState(null)}>
+          <div
+            className="note-context-menu"
+            role="menu"
+            style={{ top: noteMenuState.y, left: noteMenuState.x }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <strong>Move to notebook</strong>
+            <button type="button" className="context-menu-item" onClick={() => void handleMoveNoteToNotebook(noteMenuState.noteId, null)}>
+              Remove from notebook
+            </button>
+            {notebookList.length > 0 ? (
+              notebookList.map((notebook) => (
+                <button
+                  key={notebook.name}
+                  type="button"
+                  className="context-menu-item"
+                  onClick={() => void handleMoveNoteToNotebook(noteMenuState.noteId, notebook.name)}
+                >
+                  {notebook.name}
+                </button>
+              ))
+            ) : (
+              <span className="context-menu-empty">No notebooks available yet.</span>
+            )}
+            <button
+              type="button"
+              className="context-menu-item"
+              onClick={() => {
+                const notebookName = window.prompt('Notebook name')
+                if (!notebookName?.trim()) {
+                  return
+                }
+                void handleMoveNoteToNotebook(noteMenuState.noteId, notebookName.trim())
+              }}
+            >
+              New notebook...
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {settingsPanelOpen ? (
+        <div className="modal-shell" role="presentation" onClick={() => setSettingsPanelOpen(false)}>
+          <div className="modal-card settings-card" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
             <div className="panel-heading">
               <div>
-                <p className="section-label">Remote sync</p>
-                <h2>Configure optional NAS sync</h2>
+                <p className="section-label">Settings</p>
+                <h2>Workspace preferences</h2>
               </div>
-              <button type="button" className="ghost-action" onClick={() => setSyncPanelOpen(false)}>
+              <button type="button" className="ghost-action" onClick={() => setSettingsPanelOpen(false)}>
                 Close
               </button>
             </div>
-            <p className="modal-copy">
-              NoteBase always starts from the default offline path. Only configure this section if
-              you want to sync the local library with a remote WebDAV target.
-            </p>
-            <div className="protocol-switcher" role="tablist" aria-label="WebDAV protocol">
-              <button
-                type="button"
-                className={`view-pill ${draftSyncConfig.protocol === 'http' ? 'active' : ''}`}
-                onClick={() => handleProtocolChange('http')}
-              >
-                HTTP
-              </button>
-              <button
-                type="button"
-                className={`view-pill ${draftSyncConfig.protocol === 'https' ? 'active' : ''}`}
-                onClick={() => handleProtocolChange('https')}
-              >
-                HTTPS
-              </button>
-            </div>
-            <div className="field-grid">
-              <label className="config-field">
-                <span>Profile</span>
-                <input value={draftSyncConfig.profileName} onChange={handleSyncConfigChange('profileName')} />
-              </label>
-              <label className="config-field">
-                <span>Public IP</span>
-                <input value={draftSyncConfig.publicHost} onChange={handleSyncConfigChange('publicHost')} />
-              </label>
-              <label className="config-field">
-                <span>Port</span>
-                <input value={draftSyncConfig.publicPort} onChange={handleSyncConfigChange('publicPort')} />
-              </label>
-              <label className="config-field">
-                <span>Username</span>
-                <input value={draftSyncConfig.username} onChange={handleSyncConfigChange('username')} />
-              </label>
-              <label className="config-field">
-                <span>Password</span>
-                <input
-                  type="password"
-                  value={draftSyncConfig.password}
-                  onChange={handleSyncConfigChange('password')}
-                />
-              </label>
-              <label className="config-field full-span">
-                <span>Remote WebDAV path</span>
-                <input
-                  value={draftSyncConfig.remotePath}
-                  onChange={handleSyncConfigChange('remotePath')}
-                  placeholder="//home/data"
-                />
-              </label>
-              <label className="config-field full-span">
-                <span>Remote knowledge base path</span>
-                <input
-                  value={draftSyncConfig.remoteLibraryPath}
-                  onChange={handleSyncConfigChange('remoteLibraryPath')}
-                  placeholder="NoteBase"
-                />
-              </label>
+            <div className="settings-layout">
+              <div className="settings-sidebar">
+                <button
+                  type="button"
+                  className={`settings-nav-item ${settingsTab === 'general' ? 'settings-nav-item-active' : ''}`}
+                  onClick={() => setSettingsTab('general')}
+                >
+                  General
+                </button>
+                <button
+                  type="button"
+                  className={`settings-nav-item ${settingsTab === 'sync' ? 'settings-nav-item-active' : ''}`}
+                  onClick={() => setSettingsTab('sync')}
+                >
+                  Sync
+                </button>
+              </div>
+              <div className="settings-content">
+                {settingsTab === 'general' ? (
+                  <>
+                    <p className="modal-copy">
+                      NoteBase works from a local-first library. Each notebook maps to a folder and
+                      drives the note list in the main workspace.
+                    </p>
+                    <div className="resolved-path-card">
+                      <div className="storage-explanation-row">
+                        <span>Offline knowledge base</span>
+                        <strong>{localRootPath}</strong>
+                      </div>
+                      <div className="storage-explanation-row">
+                        <span>Notebooks</span>
+                        <strong>
+                          {notebookList.length > 0
+                            ? notebookList.map((item) => item.name).join(', ')
+                            : 'No notebooks yet'}
+                        </strong>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <p className="modal-copy">
+                      Configure WebDAV only when you want the offline library to sync with a remote
+                      target.
+                    </p>
+                    <div className="protocol-switcher" role="tablist" aria-label="WebDAV protocol">
+                      <button
+                        type="button"
+                        className={`view-pill ${draftSyncConfig.protocol === 'http' ? 'active' : ''}`}
+                        onClick={() => handleProtocolChange('http')}
+                      >
+                        HTTP
+                      </button>
+                      <button
+                        type="button"
+                        className={`view-pill ${draftSyncConfig.protocol === 'https' ? 'active' : ''}`}
+                        onClick={() => handleProtocolChange('https')}
+                      >
+                        HTTPS
+                      </button>
+                    </div>
+                    <div className="field-grid">
+                      <label className="config-field">
+                        <span>Profile</span>
+                        <input value={draftSyncConfig.profileName} onChange={handleSyncConfigChange('profileName')} />
+                      </label>
+                      <label className="config-field">
+                        <span>Public IP</span>
+                        <input value={draftSyncConfig.publicHost} onChange={handleSyncConfigChange('publicHost')} />
+                      </label>
+                      <label className="config-field">
+                        <span>Port</span>
+                        <input value={draftSyncConfig.publicPort} onChange={handleSyncConfigChange('publicPort')} />
+                      </label>
+                      <label className="config-field">
+                        <span>Username</span>
+                        <input value={draftSyncConfig.username} onChange={handleSyncConfigChange('username')} />
+                      </label>
+                      <label className="config-field">
+                        <span>Password</span>
+                        <input
+                          type="password"
+                          value={draftSyncConfig.password}
+                          onChange={handleSyncConfigChange('password')}
+                        />
+                      </label>
+                      <label className="config-field full-span">
+                        <span>Remote WebDAV path</span>
+                        <input
+                          value={draftSyncConfig.remotePath}
+                          onChange={handleSyncConfigChange('remotePath')}
+                          placeholder="//home/data"
+                        />
+                      </label>
+                      <label className="config-field full-span">
+                        <span>Remote knowledge base path</span>
+                        <input
+                          value={draftSyncConfig.remoteLibraryPath}
+                          onChange={handleSyncConfigChange('remoteLibraryPath')}
+                          placeholder="NoteBase"
+                        />
+                      </label>
+                    </div>
+                    <div className="resolved-path-card">
+                      <div className="storage-explanation-row">
+                        <span>Derived mount point</span>
+                        <strong>{draftSyncConfig.remotePath.trim() ? `/Volumes/${draftSyncConfig.remotePath.trim().split('/').filter(Boolean).at(-1) ?? 'WebDAV'}` : '/Volumes/WebDAV'}</strong>
+                      </div>
+                      <div className="storage-explanation-row">
+                        <span>WebDAV target</span>
+                        <strong>
+                          {draftSyncConfig.protocol}://
+                          {draftSyncConfig.username ? `${draftSyncConfig.username}:${draftSyncConfig.password ? '••••••' : ''}@` : ''}
+                          {draftSyncConfig.publicHost}
+                          {draftSyncConfig.publicPort ? `:${draftSyncConfig.publicPort}` : ''}
+                          {draftSyncConfig.remotePath || '//'}
+                        </strong>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
             <div className="modal-actions">
-              {syncConfig ? (
+              {settingsTab === 'sync' && syncConfig ? (
                 <button type="button" className="ghost-danger" onClick={handleDisconnectSync}>
                   Remove sync config
                 </button>
               ) : (
-                <span className="modal-hint">Offline mode will continue even if you skip this.</span>
+                <span className="modal-hint">{settingsTab === 'sync' ? syncStatus.message : localLibraryMessage}</span>
               )}
-              <button type="button" className="save-action" onClick={() => void handleConnectSync()}>
-                Save and test connection
-              </button>
+              <div className="inline-actions">
+                {settingsTab === 'sync' ? (
+                  <button type="button" className="save-action" onClick={() => void handleConnectSync()}>
+                    Save and test connection
+                  </button>
+                ) : null}
+              </div>
             </div>
           </div>
         </div>
