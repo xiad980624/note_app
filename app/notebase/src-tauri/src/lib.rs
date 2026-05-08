@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
@@ -121,6 +122,47 @@ struct SaveNotePayload {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ImportAssetPayload {
+    note_id: String,
+    file_name: String,
+    base64_data: String,
+    kind: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportAssetResponse {
+    relative_asset_path: String,
+    markdown_snippet: String,
+    message: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct NoteLinkReference {
+    title: String,
+    note_id: String,
+    relative_path: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct NoteConnectionsResponse {
+    outgoing_links: Vec<NoteLinkReference>,
+    backlinks: Vec<NoteLinkReference>,
+    unresolved_links: Vec<String>,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenPathResponse {
+    path: String,
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SyncLibrariesPayload {
     local_root_path: String,
     config: SyncConfigPayload,
@@ -182,6 +224,12 @@ struct LibraryLayout {
     assets_root: String,
     hidden_root: String,
     initialized_new_knowledge_base: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedNoteRecord {
+    summary: NoteSummary,
+    body: String,
 }
 
 #[derive(Debug)]
@@ -445,6 +493,77 @@ fn parse_frontmatter_block(content: &str) -> (Option<&str>, &str) {
     } else {
         (None, content)
     }
+}
+
+fn slugify_filename_stem(input: &str) -> String {
+    let mut slug = String::new();
+
+    for character in input.chars() {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character.to_ascii_lowercase());
+        } else if matches!(character, ' ' | '-' | '_' | '.') {
+            if !slug.ends_with('-') {
+                slug.push('-');
+            }
+        }
+    }
+
+    slug.trim_matches('-').to_string()
+}
+
+fn sanitize_import_filename(file_name: &str, timestamp_ms: u64) -> String {
+    let path = Path::new(file_name);
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .filter(|extension| !extension.is_empty());
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(slugify_filename_stem)
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or_else(|| "asset".to_string());
+
+    match extension {
+        Some(extension) => format!("{stem}-{timestamp_ms}.{extension}"),
+        None => format!("{stem}-{timestamp_ms}"),
+    }
+}
+
+fn relative_path_from(from_directory: &Path, to_path: &Path) -> PathBuf {
+    let from_components: Vec<_> = from_directory
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(value) => Some(value.to_owned()),
+            _ => None,
+        })
+        .collect();
+    let to_components: Vec<_> = to_path
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(value) => Some(value.to_owned()),
+            _ => None,
+        })
+        .collect();
+
+    let mut shared_prefix_len = 0;
+    while shared_prefix_len < from_components.len()
+        && shared_prefix_len < to_components.len()
+        && from_components[shared_prefix_len] == to_components[shared_prefix_len]
+    {
+        shared_prefix_len += 1;
+    }
+
+    let mut relative_path = PathBuf::new();
+    for _ in shared_prefix_len..from_components.len() {
+        relative_path.push("..");
+    }
+    for component in to_components.iter().skip(shared_prefix_len) {
+        relative_path.push(component);
+    }
+
+    relative_path
 }
 
 fn extract_frontmatter_value(frontmatter: &str, key: &str) -> Option<String> {
@@ -737,6 +856,81 @@ fn resolve_note_path(notes_root: &Path, relative_path: &str) -> Result<PathBuf, 
     }
 
     Ok(notes_root.join(relative))
+}
+
+fn canonicalize_link_target(input: &str) -> String {
+    input
+        .split('|')
+        .next()
+        .unwrap_or(input)
+        .split('#')
+        .next()
+        .unwrap_or(input)
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn note_reference_keys(summary: &NoteSummary) -> Vec<String> {
+    let mut keys = vec![summary.title.trim().to_ascii_lowercase()];
+    let relative_without_extension = summary
+        .relative_path
+        .strip_suffix(".md")
+        .unwrap_or(&summary.relative_path)
+        .to_ascii_lowercase();
+    keys.push(relative_without_extension.clone());
+
+    if let Some(file_stem) = Path::new(&summary.relative_path)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+    {
+        keys.push(file_stem.to_ascii_lowercase());
+    }
+
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+fn extract_wikilinks(body: &str) -> Vec<String> {
+    let mut links = Vec::new();
+    let mut cursor = 0;
+
+    while let Some(start) = body[cursor..].find("[[") {
+        let absolute_start = cursor + start + 2;
+        if let Some(end) = body[absolute_start..].find("]]") {
+            let absolute_end = absolute_start + end;
+            let target = body[absolute_start..absolute_end].trim();
+            if !target.is_empty() {
+                links.push(target.to_string());
+            }
+            cursor = absolute_end + 2;
+        } else {
+            break;
+        }
+    }
+
+    links
+}
+
+fn load_parsed_notes(root_path: &str) -> Result<Vec<ParsedNoteRecord>, String> {
+    let layout = ensure_library_layout(root_path)?;
+    let notes_root = Path::new(&layout.notes_root);
+    let mut markdown_files = Vec::new();
+    collect_markdown_files(notes_root, &mut markdown_files)?;
+
+    let mut parsed_notes = Vec::new();
+    for path in markdown_files {
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Failed to read note file {}: {error}", path.display()))?;
+        let (_, body) = parse_frontmatter_block(&content);
+        let summary = parse_note_summary(&path, notes_root)?;
+        parsed_notes.push(ParsedNoteRecord {
+            summary,
+            body: body.to_string(),
+        });
+    }
+
+    Ok(parsed_notes)
 }
 
 fn build_library_snapshot(root_path: &str) -> Result<LibrarySnapshot, String> {
@@ -1397,6 +1591,174 @@ fn save_note_document(
 }
 
 #[tauri::command]
+fn import_asset(root_path: String, payload: ImportAssetPayload) -> Result<ImportAssetResponse, String> {
+    let layout = ensure_library_layout(&root_path)?;
+    let notes_root = Path::new(&layout.notes_root);
+    let note_path = resolve_note_path(notes_root, &payload.note_id)?;
+    let note_directory = note_path
+        .parent()
+        .ok_or_else(|| format!("Failed to resolve a parent directory for {}.", note_path.display()))?;
+    let timestamp_ms = current_timestamp_ms()?;
+    let asset_file_name = sanitize_import_filename(&payload.file_name, timestamp_ms);
+    let target_directory = if payload.kind.trim().eq_ignore_ascii_case("image") {
+        Path::new(&layout.assets_root).join("images")
+    } else {
+        Path::new(&layout.assets_root).join("files")
+    };
+    let asset_path = target_directory.join(&asset_file_name);
+    let asset_bytes = BASE64_STANDARD
+        .decode(&payload.base64_data)
+        .map_err(|error| format!("Failed to decode asset payload for {}: {error}", payload.file_name))?;
+
+    fs::write(&asset_path, asset_bytes)
+        .map_err(|error| format!("Failed to write asset file {}: {error}", asset_path.display()))?;
+
+    let relative_asset_path = asset_path
+        .strip_prefix(Path::new(&layout.root_path))
+        .map_err(|error| format!("Failed to derive asset path inside the knowledge base: {error}"))?
+        .to_string_lossy()
+        .replace('\\', "/");
+    let markdown_relative_path = relative_path_from(note_directory, &asset_path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let markdown_snippet = if payload.kind.trim().eq_ignore_ascii_case("image") {
+        format!("![{}]({markdown_relative_path})", payload.file_name)
+    } else {
+        format!("[{}]({markdown_relative_path})", payload.file_name)
+    };
+
+    Ok(ImportAssetResponse {
+        relative_asset_path: relative_asset_path.clone(),
+        markdown_snippet,
+        message: format!("Imported {} into {}.", payload.file_name, relative_asset_path),
+    })
+}
+
+#[tauri::command]
+fn inspect_note_connections(
+    root_path: String,
+    note_id: String,
+) -> Result<NoteConnectionsResponse, String> {
+    let parsed_notes = load_parsed_notes(&root_path)?;
+    let selected_note = parsed_notes
+        .iter()
+        .find(|note| note.summary.id == note_id)
+        .cloned()
+        .ok_or_else(|| format!("Failed to find note {} in the local knowledge base.", note_id))?;
+
+    let mut note_index = HashMap::<String, NoteLinkReference>::new();
+    for note in &parsed_notes {
+        let reference = NoteLinkReference {
+            title: note.summary.title.clone(),
+            note_id: note.summary.id.clone(),
+            relative_path: note.summary.relative_path.clone(),
+        };
+
+        for key in note_reference_keys(&note.summary) {
+            note_index.insert(key, reference.clone());
+        }
+    }
+
+    let mut outgoing_links = Vec::new();
+    let mut unresolved_links = Vec::new();
+    let mut seen_outgoing = HashMap::<String, bool>::new();
+
+    for raw_link in extract_wikilinks(&selected_note.body) {
+        let canonical = canonicalize_link_target(&raw_link);
+        if canonical.is_empty() {
+            continue;
+        }
+
+        if let Some(reference) = note_index.get(&canonical) {
+            if seen_outgoing.insert(reference.note_id.clone(), true).is_none() {
+                outgoing_links.push(reference.clone());
+            }
+        } else if seen_outgoing.insert(format!("unresolved:{canonical}"), true).is_none() {
+            unresolved_links.push(raw_link);
+        }
+    }
+
+    let selected_keys = note_reference_keys(&selected_note.summary);
+    let mut backlinks = Vec::new();
+    let mut seen_backlinks = HashMap::<String, bool>::new();
+
+    for note in parsed_notes.iter().filter(|note| note.summary.id != selected_note.summary.id) {
+        let links = extract_wikilinks(&note.body);
+        let points_to_selected = links.iter().any(|raw_link| {
+            let canonical = canonicalize_link_target(raw_link);
+            selected_keys.iter().any(|key| key == &canonical)
+        });
+
+        if points_to_selected && seen_backlinks.insert(note.summary.id.clone(), true).is_none() {
+            backlinks.push(NoteLinkReference {
+                title: note.summary.title.clone(),
+                note_id: note.summary.id.clone(),
+                relative_path: note.summary.relative_path.clone(),
+            });
+        }
+    }
+
+    outgoing_links.sort_by(|left, right| left.title.cmp(&right.title));
+    backlinks.sort_by(|left, right| left.title.cmp(&right.title));
+    unresolved_links.sort();
+
+    Ok(NoteConnectionsResponse {
+        message: format!(
+            "Found {} outgoing links, {} backlinks, and {} unresolved wikilinks.",
+            outgoing_links.len(),
+            backlinks.len(),
+            unresolved_links.len()
+        ),
+        outgoing_links,
+        backlinks,
+        unresolved_links,
+    })
+}
+
+#[tauri::command]
+fn open_local_path(path: String) -> Result<OpenPathResponse, String> {
+    let target_path = PathBuf::from(&path);
+    if !target_path.exists() {
+        return Err(format!("The local path does not exist: {}", target_path.display()));
+    }
+
+    let status = Command::new("open")
+        .arg(&target_path)
+        .status()
+        .map_err(|error| format!("Failed to open {}: {error}", target_path.display()))?;
+    if !status.success() {
+        return Err(format!("macOS could not open {}.", target_path.display()));
+    }
+
+    Ok(OpenPathResponse {
+        path: target_path.to_string_lossy().to_string(),
+        message: format!("Opened {}.", target_path.display()),
+    })
+}
+
+#[tauri::command]
+fn reveal_local_path(path: String) -> Result<OpenPathResponse, String> {
+    let target_path = PathBuf::from(&path);
+    if !target_path.exists() {
+        return Err(format!("The local path does not exist: {}", target_path.display()));
+    }
+
+    let status = Command::new("open")
+        .args(["-R"])
+        .arg(&target_path)
+        .status()
+        .map_err(|error| format!("Failed to reveal {}: {error}", target_path.display()))?;
+    if !status.success() {
+        return Err(format!("macOS could not reveal {} in Finder.", target_path.display()));
+    }
+
+    Ok(OpenPathResponse {
+        path: target_path.to_string_lossy().to_string(),
+        message: format!("Revealed {} in Finder.", target_path.display()),
+    })
+}
+
+#[tauri::command]
 fn prepare_sync(local_root_path: String, config: SyncConfigPayload) -> Result<SyncStatusResponse, String> {
     ensure_library_layout(&local_root_path)?;
 
@@ -1595,6 +1957,10 @@ pub fn run() {
             create_note,
             load_note_document,
             save_note_document,
+            import_asset,
+            inspect_note_connections,
+            open_local_path,
+            reveal_local_path,
             prepare_sync,
             sync_libraries,
             resolve_sync_conflict

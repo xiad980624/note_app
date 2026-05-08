@@ -23,6 +23,9 @@ Current repository status as of 2026-05-05 after merge:
 - merged PR: `feature/nas-connection-config`
 - current follow-up branch for implementation: `feature/macos-auto-webdav-mount`
 
+Current editor branch as of 2026-05-07:
+- `feature/editor-experience`
+
 ## 2. Product direction
 
 This project is a personal note-taking and knowledge base app for:
@@ -172,6 +175,53 @@ Current implementation detail:
   - saves with a button or `Cmd/Ctrl + S`
   - autosaves after a short idle period
   - warns before switching notes or creating a new note while edits are unsaved
+  - supports inline title editing by syncing the first Markdown `# ` heading
+  - supports formatting helpers for:
+    - H1
+    - H2
+    - bold
+    - list
+    - quote
+    - code block
+    - link
+    - image reference
+    - file attachment reference
+  - supports keyboard shortcuts for common markdown actions:
+    - save
+    - bold
+    - link
+    - heading insertion
+    - list insertion
+    - quote insertion
+    - code block insertion
+    - image reference insertion
+  - supports `Tab` / `Shift+Tab` indentation inside the markdown editor
+  - treats `Tab` inside fenced code blocks as code indentation
+  - supports a richer preview mode for:
+    - headings
+    - paragraphs
+    - lists
+    - task lists
+    - quotes
+    - fenced code blocks
+    - code block language labels
+    - inline bold
+    - inline code
+    - links
+    - image references
+  - supports importing local files into the knowledge base asset folders:
+    - images go to `assets/images/`
+    - non-image attachments go to `assets/files/`
+    - inserted markdown uses note-relative paths automatically
+  - supports drag-and-drop asset import directly into the Markdown editor
+  - shows the current note's linked local assets in the right-side preview snapshot
+  - renders local image references as thumbnail cards when running in the Tauri desktop app
+  - supports opening an asset directly or revealing it in Finder from the asset card
+  - rich text mode now uses an editable content layer while still syncing back into Markdown as the source of truth
+  - code block insertion now prompts for an optional language and preserves it through preview and save
+  - code block insertion now also supports a quick language picker with common presets
+  - preview code blocks expose a direct copy action
+  - backlinks and outgoing wikilinks now resolve from real `[[...]]` note references instead of placeholder UI data
 - sync UI now:
   - lives behind the top-right sync button
   - shows a warning state when remote sync is missing or unhealthy
@@ -233,14 +283,23 @@ Recommended next branch after this work is committed:
 
 Recommended next coding steps:
 1. Move sync credentials from plain local storage to a safer desktop storage path
-2. Add attachment insertion and local asset-path linking flow
-3. Add delete propagation and tombstone strategy for sync
-4. Add inline diff/merge UI on top of the current per-file conflict resolution actions
-5. Add sync history, retry queue, and clearer failure recovery UX
-6. Refine Finder-style macOS mount flow and volume-name reconciliation for more edge cases
+2. Replace the rich-text placeholder with a real editing surface
+3. Add attachment insertion and local asset-path linking flow
+4. Add delete propagation and tombstone strategy for sync
+5. Add inline diff/merge UI on top of the current per-file conflict resolution actions
+6. Add sync history, retry queue, and clearer failure recovery UX
+7. Refine Finder-style macOS mount flow and volume-name reconciliation for more edge cases
 
 Optimization backlog:
 - configurable local offline path selection instead of only the default path
+- markdown preview with richer inline rendering and checklist support
+- richer Markdown editing helpers that can toggle existing syntax, not only insert snippets
+- attachment rename, dedupe, and replace behavior should become more deliberate
+- asset preview should eventually render true image thumbnails and openable file actions
+- non-image attachments still need explicit open / reveal actions
+- rich text conversion still covers a practical subset of Markdown, not every edge case
+- selection-aware formatting toggles instead of insertion-only helpers
+- slash commands or quick insert menu for common blocks
 - background sync and scheduled sync policies
 - sync progress per file, not just whole-task status
 - richer diff UI before the first sync decision
