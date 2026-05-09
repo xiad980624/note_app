@@ -518,6 +518,7 @@ fn parse_frontmatter_block(content: &str) -> (Option<&str>, &str) {
         let frontmatter_end = 4 + end_index;
         let frontmatter = &content[4..frontmatter_end];
         let body = &content[(frontmatter_end + 5)..];
+        let body = body.strip_prefix('\n').unwrap_or(body);
         (Some(frontmatter), body)
     } else {
         (None, content)
@@ -593,6 +594,94 @@ fn relative_path_from(from_directory: &Path, to_path: &Path) -> PathBuf {
     }
 
     relative_path
+}
+
+fn sanitize_path_component(input: &str) -> String {
+    let cleaned = input
+        .trim()
+        .chars()
+        .map(|character| match character {
+            '/' | '\\' | ':' | '\0' => '-',
+            _ => character,
+        })
+        .collect::<String>()
+        .trim()
+        .trim_matches('.')
+        .to_string();
+
+    if cleaned.is_empty() {
+        "untitled-notebook".to_string()
+    } else {
+        cleaned
+    }
+}
+
+fn note_container_relative_directory(document_type: &str, notebook: Option<&str>) -> PathBuf {
+    if let Some(notebook_name) = notebook.filter(|value| !value.trim().is_empty()) {
+        return PathBuf::from("notebooks").join(sanitize_path_component(notebook_name));
+    }
+
+    match document_type {
+        "todo" => PathBuf::from("todo"),
+        "journal" => PathBuf::from("journal"),
+        _ => PathBuf::from("note"),
+    }
+}
+
+fn is_external_link_target(target: &str) -> bool {
+    let trimmed = target.trim();
+    trimmed.is_empty()
+        || trimmed.starts_with('#')
+        || trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with("mailto:")
+        || trimmed.starts_with("data:")
+        || trimmed.starts_with('/')
+}
+
+fn rewrite_markdown_relative_paths(body: &str, old_directory: &Path, new_directory: &Path) -> String {
+    let mut rewritten = String::with_capacity(body.len());
+    let mut cursor = 0;
+
+    while let Some(relative_start) = body[cursor..].find("](") {
+        let target_start = cursor + relative_start + 2;
+        let Some(relative_end) = body[target_start..].find(')') else {
+            break;
+        };
+        let target_end = target_start + relative_end;
+        let target = &body[target_start..target_end];
+        let trimmed_target = target.trim();
+
+        rewritten.push_str(&body[cursor..target_start]);
+
+        if is_external_link_target(trimmed_target) {
+            rewritten.push_str(target);
+            cursor = target_end;
+            continue;
+        }
+
+        let unwrapped_target = trimmed_target
+            .strip_prefix('<')
+            .and_then(|value| value.strip_suffix('>'))
+            .unwrap_or(trimmed_target);
+        let resolved_target = old_directory.join(unwrapped_target);
+        let next_relative_target = relative_path_from(new_directory, &resolved_target)
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        if trimmed_target.starts_with('<') && trimmed_target.ends_with('>') {
+            rewritten.push('<');
+            rewritten.push_str(&next_relative_target);
+            rewritten.push('>');
+        } else {
+            rewritten.push_str(&next_relative_target);
+        }
+
+        cursor = target_end;
+    }
+
+    rewritten.push_str(&body[cursor..]);
+    rewritten
 }
 
 fn extract_frontmatter_value(frontmatter: &str, key: &str) -> Option<String> {
@@ -869,16 +958,10 @@ fn build_note_content(
         frontmatter_lines.push("tags: []".to_string());
     }
 
-    let body_with_trailing_newline = if trimmed_body.is_empty() {
-        String::new()
-    } else {
-        format!("{trimmed_body}\n")
-    };
-
     format!(
         "---\n{}\n---\n\n{}",
         frontmatter_lines.join("\n"),
-        body_with_trailing_newline
+        normalized_body
     )
 }
 
@@ -930,17 +1013,11 @@ fn build_note_content_with_metadata(
     }
 
     let normalized_body = body_after.replace("\r\n", "\n");
-    let trimmed_body = normalized_body.trim_end_matches('\n');
-    let body_with_trailing_newline = if trimmed_body.is_empty() {
-        String::new()
-    } else {
-        format!("{trimmed_body}\n")
-    };
 
     content = format!(
         "---\n{}\n---\n\n{}",
         frontmatter_lines.join("\n"),
-        body_with_trailing_newline
+        normalized_body
     );
     content
 }
@@ -1803,26 +1880,63 @@ fn move_note_to_notebook(
     let existing_raw_content = fs::read_to_string(&note_path)
         .map_err(|error| format!("Failed to read note file {}: {error}", note_path.display()))?;
     let (existing_frontmatter, existing_body) = parse_frontmatter_block(&existing_raw_content);
+    let current_document_type = extract_document_type(existing_frontmatter);
     let fallback_title = note_path
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or("Untitled note");
     let timestamp_ms = current_timestamp_ms()?;
+    let next_notebook = payload
+        .notebook
+        .and_then(|value| {
+            let trimmed = value.trim().to_string();
+            if trimmed.is_empty() { None } else { Some(trimmed) }
+        });
+    let current_directory = note_path
+        .parent()
+        .ok_or_else(|| format!("Failed to resolve a parent directory for {}.", note_path.display()))?;
+    let target_relative_directory = note_container_relative_directory(&current_document_type, next_notebook.as_deref());
+    let target_directory = notes_root.join(&target_relative_directory);
+    fs::create_dir_all(&target_directory)
+        .map_err(|error| format!("Failed to prepare target notebook directory {}: {error}", target_directory.display()))?;
+    let file_name = note_path
+        .file_name()
+        .ok_or_else(|| format!("Failed to resolve a file name for {}.", note_path.display()))?;
+    let next_note_path = target_directory.join(file_name);
+    let rewritten_body = if current_directory != target_directory {
+        rewrite_markdown_relative_paths(existing_body, current_directory, &target_directory)
+    } else {
+        existing_body.to_string()
+    };
     let next_content = build_note_content_with_metadata(
         existing_frontmatter,
-        existing_body,
+        &rewritten_body,
         fallback_title,
         &format!("note-{timestamp_ms}"),
         timestamp_ms,
         None,
-        Some(payload.notebook),
+        Some(next_notebook.clone()),
         None,
     );
+    fs::write(&next_note_path, &next_content)
+        .map_err(|error| format!("Failed to save note file {}: {error}", next_note_path.display()))?;
+    if next_note_path != note_path {
+        fs::remove_file(&note_path)
+            .map_err(|error| format!("Failed to remove the original note file {}: {error}", note_path.display()))?;
+    }
 
-    fs::write(&note_path, &next_content)
-        .map_err(|error| format!("Failed to save note file {}: {error}", note_path.display()))?;
+    let next_note_id = next_note_path
+        .strip_prefix(notes_root)
+        .map_err(|error| {
+            format!(
+                "Failed to resolve the next relative note path for {}: {error}",
+                next_note_path.display()
+            )
+        })?
+        .to_string_lossy()
+        .replace('\\', "/");
 
-    load_note_document(root_path, payload.note_id)
+    load_note_document(root_path, next_note_id)
 }
 
 #[tauri::command]

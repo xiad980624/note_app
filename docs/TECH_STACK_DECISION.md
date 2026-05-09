@@ -7,7 +7,7 @@
 - 前端框架：React + TypeScript
 - 样式方案：Tailwind CSS
 - 基础组件：shadcn/ui，按 macOS 风格定制
-- 富文本编辑器：TipTap
+- 富文本编辑器：TipTap（后续增强方向）
 - Markdown 处理：remark + unified
 - 代码块编辑：CodeMirror 6
 - 代码高亮：Shiki
@@ -26,13 +26,13 @@
 
 ### React + TypeScript
 - 生态成熟，适合和 AI 协作开发。
-- 组件化清晰，方便快速搭建三栏工作台、搜索弹窗、编辑器壳层。
+- 组件化清晰，方便快速搭建图标栏、目录树、编辑器和关系侧栏。
 - TypeScript 能帮助我们稳定数据模型，减少知识库结构演进时的混乱。
 
 ### TipTap
-- 适合做富文本编辑。
+- 适合承载未来更完整的结构化编辑层。
 - 基于 ProseMirror，扩展性足够强。
-- 后续做 `[[引用]]`、标签、代码块、任务列表都更容易。
+- 但当前阶段主编辑链路先以 Markdown-first 为准，优先保证输入、保存、自动保存稳定。
 
 ### remark + unified
 - 适合 Markdown 解析、序列化、格式处理。
@@ -82,20 +82,31 @@
 ```text
 KnowledgeBase/
   notes/
-    inbox/
-    projects/
-    topics/
+    note/
+    todo/
+    journal/
+    notebooks/
+      Product/
+      Research/
   assets/
-  .app/
+    images/
+    files/
+  .notebase/
     index.db
     settings.json
 ```
 
 说明：
-- `notes/` 保存 Markdown 笔记。
-- `assets/` 保存图片和附件。
-- `.app/index.db` 保存搜索索引、关系索引和缓存信息。
+- `notes/note/`、`notes/todo/`、`notes/journal/` 保存未归档文档。
+- `notes/notebooks/<Notebook Name>/` 保存已归档到 notebook 的文档。
+- 每篇文档保留两个独立属性：
+  - `documentType`
+  - `notebook`
+- `assets/images/` 与 `assets/files/` 分别保存图片和附件。
+- `.notebase/index.db` 保存搜索索引、关系索引和缓存信息。
 - 用户真实数据以文件为准，数据库可重建。
+- 文档移动到 notebook 时，需要同步维护正文中的相对附件路径。
+- 历史测试库可能仍存在 `inbox / projects / topics` 等旧目录，后续需要提供迁移或兼容逻辑。
 
 ## 6. 后续优化方向
 
@@ -105,6 +116,7 @@ KnowledgeBase/
 - 删除同步与墓碑记录，避免“只复制不清理”导致的残留文件。
 - 冲突解决 UI，包括逐文件比较、保留哪一侧、或生成副本。
 - 同步历史、失败恢复、重试队列和后台自动同步策略。
+- 旧知识库目录结构迁移工具：把 `inbox / projects / topics` 迁移到新的 `documentType + notebook` 结构。
 
 ## 5. 开发顺序确认
 
