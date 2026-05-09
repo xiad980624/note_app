@@ -88,6 +88,13 @@ type DefaultLocalLibraryResponse = {
   message: string
 }
 
+type NotebookMutationResponse = {
+  message: string
+  notebookName: string | null
+  affectedNoteIds: string[]
+  renamedNoteIds: Record<string, string>
+}
+
 type ImportAssetResponse = {
   relativeAssetPath: string
   markdownSnippet: string
@@ -1089,7 +1096,14 @@ function App() {
     x: number
     y: number
   } | null>(null)
+  const [notebookMenuState, setNotebookMenuState] = useState<{
+    notebook: string
+    x: number
+    y: number
+  } | null>(null)
+  const [noteTitleDraft, setNoteTitleDraft] = useState('')
   const [menuNotebookDraft, setMenuNotebookDraft] = useState('')
+  const [notebookNameDraft, setNotebookNameDraft] = useState('')
   const [wikilinkDraft, setWikilinkDraft] = useState<WikilinkDraft | null>(null)
   const [wikilinkIndex, setWikilinkIndex] = useState(0)
   const [editorTitle, setEditorTitle] = useState(DEFAULT_NOTE_TITLE)
@@ -1226,6 +1240,10 @@ function App() {
   const noteMenuTarget =
     noteMenuState
       ? knowledgeBaseIndex.notes.find((note) => note.id === noteMenuState.noteId) ?? null
+      : null
+  const notebookMenuTarget =
+    notebookMenuState
+      ? notebookList.find((notebook) => notebook.name === notebookMenuState.notebook) ?? null
       : null
 
   const syncRichTextEditorFromMarkdown = useCallback(
@@ -2419,7 +2437,13 @@ function App() {
 
   const closeNoteMenu = useCallback(() => {
     setNoteMenuState(null)
+    setNoteTitleDraft('')
     setMenuNotebookDraft('')
+  }, [])
+
+  const closeNotebookMenu = useCallback(() => {
+    setNotebookMenuState(null)
+    setNotebookNameDraft('')
   }, [])
 
   const handleCreateNotebook = useCallback((notebookName: string) => {
@@ -2539,6 +2563,159 @@ function App() {
       setSaveMessage(error instanceof Error ? error.message : 'Failed to update the selected notebook.')
     }
   }, [closeNoteMenu, knowledgeBaseIndex.notes, localRootPath, refreshLocalWorkspace, runningInTauri])
+
+  const handleRenameNote = useCallback(async () => {
+    if (!noteMenuState || !runningInTauri) {
+      return
+    }
+
+    const nextTitle = noteTitleDraft.trim()
+    if (!nextTitle) {
+      setSaveStatus('error')
+      setSaveMessage('Note title cannot be empty.')
+      return
+    }
+
+    try {
+      const response = await invokeWithTimeout<NoteDocument>('rename_note', {
+        rootPath: localRootPath,
+        payload: {
+          noteId: noteMenuState.noteId,
+          title: nextTitle,
+        },
+      })
+      await refreshLocalWorkspace(localRootPath)
+      setSelectedNoteDocument(response)
+      const editableNote = splitEditableNoteContent(response.body, response.note.title || DEFAULT_NOTE_TITLE)
+      setEditorTitle(editableNote.title)
+      setEditorBody(editableNote.body)
+      setLastSavedTitle(editableNote.title)
+      setLastSavedBody(editableNote.body)
+      setSelectedNoteId(response.note.id)
+      closeNoteMenu()
+      setSaveStatus('saved')
+      setSaveMessage(`Renamed note to ${response.note.title}.`)
+    } catch (error) {
+      setSaveStatus('error')
+      setSaveMessage(error instanceof Error ? error.message : 'Failed to rename the selected note.')
+    }
+  }, [closeNoteMenu, localRootPath, noteMenuState, noteTitleDraft, refreshLocalWorkspace, runningInTauri])
+
+  const handleDeleteNote = useCallback(async () => {
+    if (!noteMenuState || !runningInTauri) {
+      return
+    }
+
+    const noteToDelete = noteMenuTarget?.title ?? 'this note'
+    const confirmed = window.confirm(`Delete ${noteToDelete}? This cannot be undone.`)
+    if (!confirmed) {
+      return
+    }
+
+    try {
+      const response = await invokeWithTimeout<DefaultLocalLibraryResponse>('delete_note', {
+        rootPath: localRootPath,
+        payload: {
+          noteId: noteMenuState.noteId,
+        },
+      })
+      await refreshLocalWorkspace(localRootPath)
+      if (selectedNoteId === noteMenuState.noteId) {
+        setSelectedNoteDocument(null)
+        setEditorTitle(DEFAULT_NOTE_TITLE)
+        setEditorBody('')
+        setLastSavedTitle(DEFAULT_NOTE_TITLE)
+        setLastSavedBody('')
+        setSelectedNoteId(null)
+      }
+      closeNoteMenu()
+      setSaveStatus('saved')
+      setSaveMessage(response.message)
+    } catch (error) {
+      setSaveStatus('error')
+      setSaveMessage(error instanceof Error ? error.message : 'Failed to delete the selected note.')
+    }
+  }, [closeNoteMenu, localRootPath, noteMenuState, noteMenuTarget?.title, refreshLocalWorkspace, runningInTauri, selectedNoteId])
+
+  const handleRenameNotebook = useCallback(async () => {
+    if (!notebookMenuState || !runningInTauri) {
+      return
+    }
+
+    const nextName = notebookNameDraft.trim()
+    if (!nextName) {
+      setSaveStatus('error')
+      setSaveMessage('Notebook name cannot be empty.')
+      return
+    }
+
+    try {
+      const response = await invokeWithTimeout<NotebookMutationResponse>('rename_notebook', {
+        rootPath: localRootPath,
+        payload: {
+          notebook: notebookMenuState.notebook,
+          nextName,
+        },
+      })
+      await refreshLocalWorkspace(localRootPath)
+      setStoredNotebooks((current) =>
+        current
+          .filter((name) => name !== notebookMenuState.notebook)
+          .concat(response.notebookName ? [response.notebookName] : [])
+          .filter((value, index, values) => values.indexOf(value) === index)
+          .sort((a, b) => a.localeCompare(b)),
+      )
+      if (activeDirectorySelection.kind === 'notebook' && activeDirectorySelection.value === notebookMenuState.notebook && response.notebookName) {
+        setActiveDirectorySelection({ kind: 'notebook', value: response.notebookName })
+      }
+      setSelectedNoteId((current) => (current && response.renamedNoteIds[current] ? response.renamedNoteIds[current] : current))
+      closeNotebookMenu()
+      setSaveStatus('saved')
+      setSaveMessage(response.message)
+    } catch (error) {
+      setSaveStatus('error')
+      setSaveMessage(error instanceof Error ? error.message : 'Failed to rename the selected notebook.')
+    }
+  }, [activeDirectorySelection, closeNotebookMenu, localRootPath, notebookMenuState, notebookNameDraft, refreshLocalWorkspace, runningInTauri])
+
+  const handleDeleteNotebook = useCallback(async () => {
+    if (!notebookMenuState || !runningInTauri) {
+      return
+    }
+
+    const confirmed = window.confirm(`Delete notebook ${notebookMenuState.notebook} and all notes inside it? This cannot be undone.`)
+    if (!confirmed) {
+      return
+    }
+
+    try {
+      const response = await invokeWithTimeout<NotebookMutationResponse>('delete_notebook', {
+        rootPath: localRootPath,
+        payload: {
+          notebook: notebookMenuState.notebook,
+        },
+      })
+      await refreshLocalWorkspace(localRootPath)
+      setStoredNotebooks((current) => current.filter((name) => name !== notebookMenuState.notebook))
+      if (activeDirectorySelection.kind === 'notebook' && activeDirectorySelection.value === notebookMenuState.notebook) {
+        setActiveDirectorySelection({ kind: 'type', value: 'note' })
+      }
+      if (selectedNoteId && response.affectedNoteIds.includes(selectedNoteId)) {
+        setSelectedNoteDocument(null)
+        setEditorTitle(DEFAULT_NOTE_TITLE)
+        setEditorBody('')
+        setLastSavedTitle(DEFAULT_NOTE_TITLE)
+        setLastSavedBody('')
+        setSelectedNoteId(null)
+      }
+      closeNotebookMenu()
+      setSaveStatus('saved')
+      setSaveMessage(response.message)
+    } catch (error) {
+      setSaveStatus('error')
+      setSaveMessage(error instanceof Error ? error.message : 'Failed to delete the selected notebook.')
+    }
+  }, [activeDirectorySelection, closeNotebookMenu, localRootPath, notebookMenuState, refreshLocalWorkspace, runningInTauri, selectedNoteId])
 
   const handleSaveTags = useCallback(async () => {
     if (!selectedNote || !runningInTauri) {
@@ -2946,11 +3123,13 @@ function App() {
                                   onDragEnd={handleNoteDragEnd}
                                   onContextMenu={(event) => {
                                     event.preventDefault()
+                                    closeNotebookMenu()
                                     setNoteMenuState({
                                       noteId: note.id,
                                       x: event.clientX,
                                       y: event.clientY,
                                     })
+                                    setNoteTitleDraft(note.title)
                                   }}
                                 >
                                   <span>{note.title}</span>
@@ -3065,6 +3244,16 @@ function App() {
                                   setActiveDirectorySelection({ kind: 'notebook', value: notebook.name })
                                   setSelectedNoteId(null)
                                 }}
+                                onContextMenu={(event) => {
+                                  event.preventDefault()
+                                  closeNoteMenu()
+                                  setNotebookMenuState({
+                                    notebook: notebook.name,
+                                    x: event.clientX,
+                                    y: event.clientY,
+                                  })
+                                  setNotebookNameDraft(notebook.name)
+                                }}
                               >
                                 <span>{notebook.name}</span>
                                 <strong>{notebook.count}</strong>
@@ -3085,11 +3274,13 @@ function App() {
                                       onDragEnd={handleNoteDragEnd}
                                       onContextMenu={(event) => {
                                         event.preventDefault()
+                                        closeNotebookMenu()
                                         setNoteMenuState({
                                           noteId: note.id,
                                           x: event.clientX,
                                           y: event.clientY,
                                         })
+                                        setNoteTitleDraft(note.title)
                                       }}
                                     >
                                       <span>{note.title}</span>
@@ -3867,13 +4058,31 @@ function App() {
             onClick={(event) => event.stopPropagation()}
           >
             <div className="note-context-menu-header">
-              <p className="section-label">Notebook</p>
+              <p className="section-label">Note</p>
               <strong>{noteMenuTarget?.title ?? 'Selected note'}</strong>
-              <span>
-                {noteMenuTarget?.notebook
-                  ? `Currently in ${noteMenuTarget.notebook}`
-                  : 'This note is only in its primary document list'}
-              </span>
+              <span>{noteMenuTarget?.relativePath ?? 'Local knowledge base note'}</span>
+            </div>
+
+            <div className="note-context-menu-create">
+              <input
+                value={noteTitleDraft}
+                onChange={(event) => setNoteTitleDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    void handleRenameNote()
+                  }
+                  if (event.key === 'Escape') {
+                    closeNoteMenu()
+                  }
+                }}
+                className="note-context-menu-input"
+                placeholder="Rename note"
+                autoFocus
+              />
+              <button type="button" className="note-context-menu-action" onClick={() => void handleRenameNote()}>
+                Rename
+              </button>
             </div>
 
             {notebookList.length > 0 ? (
@@ -3941,6 +4150,62 @@ function App() {
                 Remove from notebook
               </button>
             ) : null}
+            <button
+              type="button"
+              className="context-menu-item context-menu-item-danger"
+              onClick={() => void handleDeleteNote()}
+            >
+              Delete note
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {notebookMenuState ? (
+        <div className="context-menu-shell" role="presentation" onClick={closeNotebookMenu}>
+          <div
+            className="note-context-menu"
+            role="menu"
+            style={{ top: notebookMenuState.y, left: notebookMenuState.x }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="note-context-menu-header">
+              <p className="section-label">Notebook</p>
+              <strong>{notebookMenuTarget?.name ?? notebookMenuState.notebook}</strong>
+              <span>
+                {notebookMenuTarget ? `${notebookMenuTarget.count} note${notebookMenuTarget.count === 1 ? '' : 's'}` : 'Notebook'}
+              </span>
+            </div>
+
+            <div className="note-context-menu-create">
+              <input
+                value={notebookNameDraft}
+                onChange={(event) => setNotebookNameDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    void handleRenameNotebook()
+                  }
+                  if (event.key === 'Escape') {
+                    closeNotebookMenu()
+                  }
+                }}
+                className="note-context-menu-input"
+                placeholder="Rename notebook"
+                autoFocus
+              />
+              <button type="button" className="note-context-menu-action" onClick={() => void handleRenameNotebook()}>
+                Rename
+              </button>
+            </div>
+
+            <button
+              type="button"
+              className="context-menu-item context-menu-item-danger"
+              onClick={() => void handleDeleteNotebook()}
+            >
+              Delete notebook
+            </button>
           </div>
         </div>
       ) : null}
