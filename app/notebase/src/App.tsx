@@ -21,6 +21,7 @@ declare global {
 
 const SYNC_CONFIG_KEY = 'notebase:sync-config'
 const SELECTED_NOTE_KEY = 'notebase:selected-note-id'
+const NOTEBOOKS_KEY = 'notebase:notebooks'
 const INVOKE_TIMEOUT_MS = 12000
 const BROWSER_LOCAL_PATH_PLACEHOLDER = '~/Documents/NoteBase'
 
@@ -261,6 +262,28 @@ const loadStoredSyncConfig = (): SyncConfig | null => {
   }
 }
 
+const loadStoredNotebooks = () => {
+  if (typeof window === 'undefined') {
+    return [] as string[]
+  }
+
+  const raw = window.localStorage.getItem(NOTEBOOKS_KEY)
+  if (!raw) {
+    return [] as string[]
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as string[]
+    return parsed
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .filter((value, index, values) => values.indexOf(value) === index)
+      .sort((left, right) => left.localeCompare(right))
+  } catch {
+    return [] as string[]
+  }
+}
+
 const syncToneFromStatus = (status: SyncStatusResponse, busy: boolean): SyncButtonTone => {
   if (busy) {
     return 'busy'
@@ -384,6 +407,14 @@ function AppIcon({ name, className }: { name: string; className?: string }) {
           <path d="M7 10.5h4.5" />
         </svg>
       )
+    case 'folderPlus':
+      return (
+        <svg {...commonProps}>
+          <path d="M3.8 6.4h4l1.2 1.4h7.2v6.6a1.9 1.9 0 0 1-1.9 1.9H5.7a1.9 1.9 0 0 1-1.9-1.9z" />
+          <path d="M10.8 10.2v4" />
+          <path d="M8.8 12.2h4" />
+        </svg>
+      )
     case 'today':
       return (
         <svg {...commonProps}>
@@ -409,15 +440,19 @@ function AppIcon({ name, className }: { name: string; className?: string }) {
     case 'backlink':
       return (
         <svg {...commonProps}>
-          <path d="M8 6 4.5 9.5 8 13" />
-          <path d="M5 9.5h5.5a4 4 0 1 1 0 8H8.5" />
+          <path d="M8.2 11.8 5.1 8.7a2.4 2.4 0 0 1 3.4-3.4l2.1 2.1" />
+          <path d="M9.7 14.7h3.1a2.3 2.3 0 0 0 0-4.6H10" />
+          <path d="M13.2 10.1 11 8" />
+          <path d="M13.2 10.1h-3" />
         </svg>
       )
     case 'outgoing':
       return (
         <svg {...commonProps}>
-          <path d="M12 6 15.5 9.5 12 13" />
-          <path d="M15 9.5H9.5a4 4 0 1 0 0 8H11.5" />
+          <path d="M11.8 8.2 14.9 11.3a2.4 2.4 0 1 1-3.4 3.4l-2.1-2.1" />
+          <path d="M10.3 5.3H7.2a2.3 2.3 0 1 0 0 4.6H10" />
+          <path d="M6.8 9.9 9 12" />
+          <path d="M6.8 9.9h3" />
         </svg>
       )
     case 'graph':
@@ -1042,6 +1077,10 @@ function App() {
   const [commandPaletteIndex, setCommandPaletteIndex] = useState(0)
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('general')
+  const [storedNotebooks, setStoredNotebooks] = useState<string[]>(() => loadStoredNotebooks())
+  const [creatingNotebook, setCreatingNotebook] = useState(false)
+  const [newNotebookName, setNewNotebookName] = useState('')
+  const [dragTargetNotebook, setDragTargetNotebook] = useState<string | null>(null)
   const [noteConnections, setNoteConnections] = useState<NoteConnections>({
     outgoingLinks: [],
     backlinks: [],
@@ -1060,6 +1099,7 @@ function App() {
   const commandPaletteInputRef = useRef<HTMLInputElement | null>(null)
   const commandPaletteItemsRef = useRef<CommandPaletteItem[]>([])
   const pendingSelectionRef = useRef<{ start: number; end: number }>({ start: 0, end: 0 })
+  const draggedNoteIdRef = useRef<string | null>(null)
   const notesByType = useMemo(() => {
     const groups: Record<DocumentType, RealNoteSummary[]> = {
       todo: [],
@@ -1081,10 +1121,14 @@ function App() {
       }
     }
 
+    for (const notebookName of storedNotebooks) {
+      counts.set(notebookName, counts.get(notebookName) ?? 0)
+    }
+
     return Array.from(counts.entries())
       .map(([name, count]) => ({ name, count }))
       .sort((left, right) => left.name.localeCompare(right.name))
-  }, [knowledgeBaseIndex.notes])
+  }, [knowledgeBaseIndex.notes, storedNotebooks])
   const visibleNotes = useMemo(() => {
     if (activeDirectorySelection.kind === 'type') {
       return notesByType[activeDirectorySelection.value]
@@ -1092,11 +1136,9 @@ function App() {
 
     return knowledgeBaseIndex.notes.filter((note) => note.notebook === activeDirectorySelection.value)
   }, [activeDirectorySelection, knowledgeBaseIndex.notes, notesByType])
-  const selectedNote =
-    visibleNotes.find((note) => note.id === selectedNoteId) ??
-    knowledgeBaseIndex.notes.find((note) => note.id === selectedNoteId) ??
-    visibleNotes[0] ??
-    null
+  const selectedNote = selectedNoteId
+    ? knowledgeBaseIndex.notes.find((note) => note.id === selectedNoteId) ?? null
+    : null
   const selectedMediaAsset =
     mediaAssets.find((asset) => asset.id === selectedMediaAssetId) ?? mediaAssets[0] ?? null
   const filteredMediaAssets = useMemo(() => {
@@ -1168,6 +1210,10 @@ function App() {
       window.localStorage.removeItem(SYNC_CONFIG_KEY)
     }
   }, [syncConfig])
+
+  useEffect(() => {
+    window.localStorage.setItem(NOTEBOOKS_KEY, JSON.stringify(storedNotebooks))
+  }, [storedNotebooks])
 
   const refreshLocalWorkspace = useCallback(async (rootPath: string) => {
     if (!runningInTauri) {
@@ -1812,6 +1858,11 @@ function App() {
       return
     }
 
+    const hasFiles = Array.from(event.dataTransfer.types).includes('Files')
+    if (!hasFiles) {
+      return
+    }
+
     event.preventDefault()
     setIsDragActive(false)
 
@@ -1825,6 +1876,11 @@ function App() {
 
   const handleRichTextDragOver = (event: React.DragEvent<HTMLDivElement>) => {
     if (editorViewMode !== 'rich-text' || !selectedNote) {
+      return
+    }
+
+    const hasFiles = Array.from(event.dataTransfer.types).includes('Files')
+    if (!hasFiles) {
       return
     }
 
@@ -2341,6 +2397,78 @@ function App() {
     setSettingsPanelOpen(true)
   }, [])
 
+  const handleCreateNotebook = useCallback((notebookName: string) => {
+    const normalizedName = notebookName.trim()
+    if (!normalizedName) {
+      setSaveStatus('error')
+      setSaveMessage('Notebook name cannot be empty.')
+      return false
+    }
+
+    const alreadyExists = storedNotebooks.some((item) => item.toLowerCase() === normalizedName.toLowerCase())
+    if (alreadyExists) {
+      setExpandedSections((current) => ({ ...current, notebooks: true }))
+      setActiveDirectorySelection({ kind: 'notebook', value: normalizedName })
+      setSelectedNoteId(null)
+      setCreatingNotebook(false)
+      setNewNotebookName('')
+      setSaveStatus('saved')
+      setSaveMessage(`Notebook ${normalizedName} already exists.`)
+      return true
+    }
+
+    setStoredNotebooks((current) => [...current, normalizedName].sort((a, b) => a.localeCompare(b)))
+    setWorkspaceView('notes')
+    setExpandedSections((current) => ({ ...current, notebooks: true }))
+    setActiveDirectorySelection({ kind: 'notebook', value: normalizedName })
+    setSelectedNoteId(null)
+    setCreatingNotebook(false)
+    setNewNotebookName('')
+    setSaveStatus('saved')
+    setSaveMessage(`Created notebook ${normalizedName}.`)
+    return true
+  }, [storedNotebooks])
+
+  const openNotebookCreator = useCallback(() => {
+    setWorkspaceView('notes')
+    setExpandedSections((current) => ({ ...current, notebooks: true }))
+    setCreatingNotebook(true)
+  }, [])
+
+  const handleNoteDragStart = useCallback(
+    (event: React.DragEvent<HTMLElement>, noteId: string) => {
+      event.dataTransfer.effectAllowed = 'move'
+      event.dataTransfer.setData('application/x-notebase-note', noteId)
+      event.dataTransfer.setData('text/plain', noteId)
+      draggedNoteIdRef.current = noteId
+    },
+    [],
+  )
+
+  const handleNoteDragEnd = useCallback(() => {
+    draggedNoteIdRef.current = null
+    setDragTargetNotebook(null)
+  }, [])
+
+  const handleNotebookCreatorSubmit = useCallback(() => {
+    void handleCreateNotebook(newNotebookName)
+  }, [handleCreateNotebook, newNotebookName])
+
+  const resolveDraggedNoteId = useCallback((event: React.DragEvent<HTMLElement>) => {
+    const internalId = draggedNoteIdRef.current
+    if (internalId) {
+      return internalId
+    }
+
+    const customTransferId = event.dataTransfer.getData('application/x-notebase-note')
+    if (customTransferId) {
+      return customTransferId
+    }
+
+    const plainTransferId = event.dataTransfer.getData('text/plain')
+    return plainTransferId || null
+  }, [])
+
   const toggleSection = useCallback((section: LibrarySectionKey) => {
     setExpandedSections((current) => ({
       ...current,
@@ -2354,6 +2482,11 @@ function App() {
     }
 
     try {
+      if (notebook) {
+        setStoredNotebooks((current) =>
+          current.includes(notebook) ? current : [...current, notebook].sort((a, b) => a.localeCompare(b)),
+        )
+      }
       await invokeWithTimeout<NoteDocument>('move_note_to_notebook', {
         rootPath: localRootPath,
         payload: {
@@ -2363,10 +2496,18 @@ function App() {
       })
       await refreshLocalWorkspace(localRootPath)
       setNoteMenuState(null)
+      draggedNoteIdRef.current = null
+      setDragTargetNotebook(null)
+      if (notebook) {
+        setExpandedSections((current) => ({ ...current, notebooks: true }))
+        setActiveDirectorySelection({ kind: 'notebook', value: notebook })
+        setSelectedNoteId(noteId)
+      }
       setSaveStatus('saved')
       setSaveMessage(notebook ? `Moved note to ${notebook}.` : 'Removed note from notebook.')
       if (activeDirectorySelection.kind === 'notebook' && notebook !== activeDirectorySelection.value) {
         setActiveDirectorySelection({ kind: 'type', value: 'note' })
+        setSelectedNoteId(null)
       }
     } catch (error) {
       setSaveStatus('error')
@@ -2607,12 +2748,24 @@ function App() {
                   className="nav-item nav-item-collapsed"
                   onClick={() => void handleCreateNote(item.key)}
                   title={item.createLabel}
+                  aria-label={item.createLabel}
                 >
                   <span className="nav-item-main">
                     <AppIcon name={item.icon} className="nav-icon" />
                   </span>
                 </button>
               ))}
+              <button
+                type="button"
+                className="nav-item nav-item-collapsed"
+                onClick={openNotebookCreator}
+                title="New Folder"
+                aria-label="New Folder"
+              >
+                <span className="nav-item-main">
+                  <AppIcon name="folderPlus" className="nav-icon" />
+                </span>
+              </button>
             </nav>
 
             <nav className="nav-section shell-nav-section" aria-label="Primary navigation">
@@ -2637,6 +2790,7 @@ function App() {
                     className={`nav-item nav-item-collapsed ${isActive ? 'active' : ''}`}
                     onClick={handleClick}
                     title={item.label}
+                    aria-label={item.label}
                   >
                     <span className="nav-item-main">
                       <AppIcon name={item.icon} className="nav-icon" />
@@ -2653,6 +2807,7 @@ function App() {
               className="nav-item nav-item-collapsed"
               onClick={() => openSettingsPanel('general')}
               title="Settings"
+              aria-label="Settings"
             >
               <span className="nav-item-main">
                 <AppIcon name="settings" className="nav-icon" />
@@ -2662,6 +2817,7 @@ function App() {
               type="button"
               className="nav-item nav-item-collapsed"
               title="Trash"
+              aria-label="Trash"
             >
               <span className="nav-item-main">
                 <AppIcon name="trash" className="nav-icon" />
@@ -2682,29 +2838,6 @@ function App() {
                 <h2>{viewMeta[workspaceView].title}</h2>
                 <p>{viewMeta[workspaceView].subtitle}</p>
               </div>
-              <nav className="workspace-tabs" aria-label="Workspace views">
-                <button
-                  type="button"
-                  className={`workspace-tab ${workspaceView === 'notes' ? 'workspace-tab-active' : ''}`}
-                  onClick={() => navigateToView('notes')}
-                >
-                  Notes
-                </button>
-                <button
-                  type="button"
-                  className={`workspace-tab ${workspaceView === 'graph' ? 'workspace-tab-active' : ''}`}
-                  onClick={() => navigateToView('graph')}
-                >
-                  Graph
-                </button>
-                <button
-                  type="button"
-                  className={`workspace-tab ${workspaceView === 'media' ? 'workspace-tab-active' : ''}`}
-                  onClick={() => navigateToView('media')}
-                >
-                  Media
-                </button>
-              </nav>
             </div>
 
             <div className="workspace-topbar-actions">
@@ -2783,6 +2916,9 @@ function App() {
                                   type="button"
                                   className={`directory-entry ${selectedNote?.id === note.id ? 'directory-entry-active' : ''}`}
                                   onClick={() => handleSelectNote(note.id)}
+                                  draggable
+                                  onDragStart={(event) => handleNoteDragStart(event, note.id)}
+                                  onDragEnd={handleNoteDragEnd}
                                   onContextMenu={(event) => {
                                     event.preventDefault()
                                     setNoteMenuState({
@@ -2822,9 +2958,76 @@ function App() {
                     </button>
                     {expandedSections.notebooks ? (
                       <div className="directory-entry-list">
+                        {creatingNotebook ? (
+                          <div className="directory-inline-creator">
+                            <input
+                              value={newNotebookName}
+                              onChange={(event) => setNewNotebookName(event.target.value)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                  event.preventDefault()
+                                  handleNotebookCreatorSubmit()
+                                }
+                                if (event.key === 'Escape') {
+                                  setCreatingNotebook(false)
+                                  setNewNotebookName('')
+                                }
+                              }}
+                              className="directory-inline-input"
+                              placeholder="New notebook"
+                              autoFocus
+                            />
+                            <button
+                              type="button"
+                              className="directory-inline-action"
+                              onClick={handleNotebookCreatorSubmit}
+                            >
+                              Add
+                            </button>
+                          </div>
+                        ) : null}
                         {notebookList.length > 0 ? (
                           notebookList.map((notebook) => (
-                            <div key={notebook.name} className="directory-notebook-block">
+                            <div
+                              key={notebook.name}
+                              className={`directory-notebook-block ${
+                                dragTargetNotebook === notebook.name ? 'directory-entry-drop-target' : ''
+                              }`}
+                              onDragEnter={(event) => {
+                                const currentDraggedNoteId = resolveDraggedNoteId(event)
+                                if (!currentDraggedNoteId) {
+                                  return
+                                }
+                                event.preventDefault()
+                                setDragTargetNotebook(notebook.name)
+                              }}
+                              onDragOver={(event) => {
+                                const currentDraggedNoteId = resolveDraggedNoteId(event)
+                                if (!currentDraggedNoteId) {
+                                  return
+                                }
+                                event.preventDefault()
+                                event.dataTransfer.dropEffect = 'move'
+                                setDragTargetNotebook(notebook.name)
+                              }}
+                              onDragLeave={(event) => {
+                                if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                                  return
+                                }
+                                if (dragTargetNotebook === notebook.name) {
+                                  setDragTargetNotebook(null)
+                                }
+                              }}
+                              onDrop={(event) => {
+                                const currentDraggedNoteId = resolveDraggedNoteId(event)
+                                if (!currentDraggedNoteId) {
+                                  return
+                                }
+                                event.preventDefault()
+                                event.stopPropagation()
+                                void handleMoveNoteToNotebook(currentDraggedNoteId, notebook.name)
+                              }}
+                            >
                               <button
                                 type="button"
                                 className={`directory-entry ${
@@ -2833,9 +3036,10 @@ function App() {
                                     ? 'directory-entry-active'
                                     : ''
                                 }`}
-                                onClick={() =>
+                                onClick={() => {
                                   setActiveDirectorySelection({ kind: 'notebook', value: notebook.name })
-                                }
+                                  setSelectedNoteId(null)
+                                }}
                               >
                                 <span>{notebook.name}</span>
                                 <strong>{notebook.count}</strong>
@@ -2851,6 +3055,9 @@ function App() {
                                         selectedNote?.id === note.id ? 'directory-entry-active' : ''
                                       }`}
                                       onClick={() => handleSelectNote(note.id)}
+                                      draggable
+                                      onDragStart={(event) => handleNoteDragStart(event, note.id)}
+                                      onDragEnd={handleNoteDragEnd}
                                       onContextMenu={(event) => {
                                         event.preventDefault()
                                         setNoteMenuState({
@@ -3108,7 +3315,11 @@ function App() {
                     ) : (
                       <div className="editor-empty-state">
                         <strong>No note selected</strong>
-                        <p>{localLibraryMessage}</p>
+                        <p>
+                          {activeDirectorySelection.kind === 'notebook'
+                            ? `Choose a note from ${activeDirectorySelection.value} to start editing.`
+                            : 'Choose a document from the directory tree to start editing.'}
+                        </p>
                       </div>
                     )}
                   </article>
@@ -3144,6 +3355,7 @@ function App() {
                       className={`inspector-tab ${inspectorTab === 'backlinks' ? 'inspector-tab-active' : ''}`}
                       onClick={() => setInspectorTab('backlinks')}
                       title="Backlinks"
+                      aria-label="Backlinks"
                     >
                       <AppIcon name="backlink" className="tool-icon" />
                     </button>
@@ -3152,6 +3364,7 @@ function App() {
                       className={`inspector-tab ${inspectorTab === 'outgoing' ? 'inspector-tab-active' : ''}`}
                       onClick={() => setInspectorTab('outgoing')}
                       title="Outgoing links"
+                      aria-label="Outgoing links"
                     >
                       <AppIcon name="outgoing" className="tool-icon" />
                     </button>
@@ -3168,7 +3381,10 @@ function App() {
                   {inspectorTab === 'backlinks' ? (
                     <div className="inspector-tab-panel">
                       <div className="inspector-subsection">
-                        <p className="section-label">Backlinks</p>
+                        <p className="section-label inspector-section-label-with-icon">
+                          <AppIcon name="backlink" className="tool-icon" />
+                          <span>Backlinks</span>
+                        </p>
                         <div className="connection-card-list">
                           {noteConnections.backlinks.length > 0 ? (
                             noteConnections.backlinks.map((item) => (
@@ -3191,7 +3407,10 @@ function App() {
                   ) : inspectorTab === 'outgoing' ? (
                     <div className="inspector-tab-panel">
                       <div className="inspector-subsection">
-                        <p className="section-label">Outgoing links</p>
+                        <p className="section-label inspector-section-label-with-icon">
+                          <AppIcon name="outgoing" className="tool-icon" />
+                          <span>Outgoing Links</span>
+                        </p>
                         <div className="connection-card-list">
                           {noteConnections.outgoingLinks.length > 0 ? (
                             noteConnections.outgoingLinks.map((item) => (
@@ -3242,13 +3461,14 @@ function App() {
                             <label className="config-field full-span">
                               <span>Edit tags</span>
                               <input
+                                className="tag-editor-input"
                                 value={pendingTags}
                                 onChange={(event) => setPendingTags(event.target.value)}
                                 placeholder="design, reference, weekly"
                               />
                             </label>
-                            <div className="inline-actions">
-                              <button type="button" className="save-action" onClick={() => void handleSaveTags()}>
+                            <div className="inline-actions tag-editor-actions">
+                              <button type="button" className="save-action tag-save-action" onClick={() => void handleSaveTags()}>
                                 Save Tags
                               </button>
                             </div>
