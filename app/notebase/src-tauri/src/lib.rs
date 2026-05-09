@@ -138,6 +138,32 @@ struct MoveNotePayload {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct RenameNotePayload {
+    note_id: String,
+    title: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteNotePayload {
+    note_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RenameNotebookPayload {
+    notebook: String,
+    next_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteNotebookPayload {
+    notebook: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ImportAssetPayload {
     note_id: String,
     file_name: String,
@@ -188,6 +214,15 @@ struct MediaAssetRecord {
 struct OpenPathResponse {
     path: String,
     message: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct NotebookMutationResponse {
+    message: String,
+    notebook_name: Option<String>,
+    affected_note_ids: Vec<String>,
+    renamed_note_ids: HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -626,6 +661,48 @@ fn note_container_relative_directory(document_type: &str, notebook: Option<&str>
         "journal" => PathBuf::from("journal"),
         _ => PathBuf::from("note"),
     }
+}
+
+fn strip_title_heading_from_body(body: &str) -> &str {
+    if let Some(remainder) = body.strip_prefix("# ") {
+        if let Some(line_break) = remainder.find('\n') {
+            return remainder[(line_break + 1)..].trim_start_matches('\n');
+        }
+
+        return "";
+    }
+
+    body
+}
+
+fn compose_note_body_with_title(title: &str, body: &str) -> String {
+    let normalized_title = title.trim();
+    let normalized_body = body.replace("\r\n", "\n").trim_start_matches('\n').to_string();
+
+    if normalized_body.is_empty() {
+        format!("# {}", normalized_title)
+    } else {
+        format!("# {}\n\n{}", normalized_title, normalized_body)
+    }
+}
+
+fn ensure_unique_file_path(target_path: PathBuf) -> PathBuf {
+    if !target_path.exists() {
+        return target_path;
+    }
+
+    let stem = target_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("note");
+    let extension = target_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("md");
+    let parent = target_path.parent().map(PathBuf::from).unwrap_or_default();
+    let timestamp_ms = current_timestamp_ms().unwrap_or(0);
+
+    parent.join(format!("{stem}-{timestamp_ms}.{extension}"))
 }
 
 fn is_external_link_target(target: &str) -> bool {
@@ -1837,6 +1914,90 @@ fn save_note_document(
 }
 
 #[tauri::command]
+fn rename_note(
+    root_path: String,
+    payload: RenameNotePayload,
+) -> Result<NoteDocumentResponse, String> {
+    let normalized_title = payload.title.trim();
+    if normalized_title.is_empty() {
+        return Err("Note title cannot be empty.".to_string());
+    }
+
+    let layout = ensure_library_layout(&root_path)?;
+    let notes_root = Path::new(&layout.notes_root);
+    let note_path = resolve_note_path(notes_root, &payload.note_id)?;
+    let existing_raw_content = fs::read_to_string(&note_path)
+        .map_err(|error| format!("Failed to read note file {}: {error}", note_path.display()))?;
+    let (existing_frontmatter, existing_body) = parse_frontmatter_block(&existing_raw_content);
+    let timestamp_ms = current_timestamp_ms()?;
+    let remaining_body = strip_title_heading_from_body(existing_body);
+    let next_body = compose_note_body_with_title(normalized_title, remaining_body);
+    let next_content = build_note_content_with_metadata(
+        existing_frontmatter,
+        &next_body,
+        normalized_title,
+        &format!("note-{timestamp_ms}"),
+        timestamp_ms,
+        None,
+        None,
+        None,
+    );
+
+    let current_directory = note_path
+        .parent()
+        .ok_or_else(|| format!("Failed to resolve a parent directory for {}.", note_path.display()))?;
+    let current_extension = note_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("md");
+    let target_file_name = format!("{}.{}", slugify_title(normalized_title), current_extension);
+    let candidate_path = current_directory.join(target_file_name);
+    let next_note_path = if candidate_path == note_path {
+        candidate_path
+    } else {
+        ensure_unique_file_path(candidate_path)
+    };
+
+    fs::write(&next_note_path, &next_content)
+        .map_err(|error| format!("Failed to save note file {}: {error}", next_note_path.display()))?;
+    if next_note_path != note_path {
+        fs::remove_file(&note_path)
+            .map_err(|error| format!("Failed to remove the original note file {}: {error}", note_path.display()))?;
+    }
+
+    let next_note_id = next_note_path
+        .strip_prefix(notes_root)
+        .map_err(|error| {
+            format!(
+                "Failed to resolve the next relative note path for {}: {error}",
+                next_note_path.display()
+            )
+        })?
+        .to_string_lossy()
+        .replace('\\', "/");
+
+    load_note_document(root_path, next_note_id)
+}
+
+#[tauri::command]
+fn delete_note(root_path: String, payload: DeleteNotePayload) -> Result<DefaultLocalLibraryResponse, String> {
+    let layout = ensure_library_layout(&root_path)?;
+    let notes_root = Path::new(&layout.notes_root);
+    let note_path = resolve_note_path(notes_root, &payload.note_id)?;
+    if !note_path.exists() {
+        return Err(format!("The note does not exist: {}", note_path.display()));
+    }
+
+    fs::remove_file(&note_path)
+        .map_err(|error| format!("Failed to delete note file {}: {error}", note_path.display()))?;
+
+    Ok(DefaultLocalLibraryResponse {
+        root_path,
+        message: format!("Deleted {}.", payload.note_id),
+    })
+}
+
+#[tauri::command]
 fn update_note_tags(
     root_path: String,
     payload: UpdateNoteTagsPayload,
@@ -1937,6 +2098,139 @@ fn move_note_to_notebook(
         .replace('\\', "/");
 
     load_note_document(root_path, next_note_id)
+}
+
+#[tauri::command]
+fn rename_notebook(
+    root_path: String,
+    payload: RenameNotebookPayload,
+) -> Result<NotebookMutationResponse, String> {
+    let current_name = payload.notebook.trim();
+    let next_name = payload.next_name.trim();
+    if current_name.is_empty() || next_name.is_empty() {
+        return Err("Notebook names cannot be empty.".to_string());
+    }
+    if current_name == next_name {
+        return Ok(NotebookMutationResponse {
+            message: format!("Notebook {} already uses that name.", current_name),
+            notebook_name: Some(next_name.to_string()),
+            affected_note_ids: Vec::new(),
+            renamed_note_ids: HashMap::new(),
+        });
+    }
+
+    let layout = ensure_library_layout(&root_path)?;
+    let notes_root = Path::new(&layout.notes_root);
+    let current_directory = notes_root.join("notebooks").join(sanitize_path_component(current_name));
+    let next_directory = notes_root.join("notebooks").join(sanitize_path_component(next_name));
+
+    if !current_directory.exists() {
+        return Err(format!("Notebook {} does not exist.", current_name));
+    }
+    if next_directory.exists() {
+        return Err(format!("Notebook {} already exists.", next_name));
+    }
+
+    fs::create_dir_all(&next_directory)
+        .map_err(|error| format!("Failed to prepare notebook directory {}: {error}", next_directory.display()))?;
+
+    let mut markdown_files = Vec::new();
+    collect_markdown_files(&current_directory, &mut markdown_files)?;
+    let mut affected_note_ids = Vec::new();
+    let mut renamed_note_ids = HashMap::new();
+
+    for note_path in markdown_files {
+        let existing_raw_content = fs::read_to_string(&note_path)
+            .map_err(|error| format!("Failed to read note file {}: {error}", note_path.display()))?;
+        let (existing_frontmatter, existing_body) = parse_frontmatter_block(&existing_raw_content);
+        let fallback_title = note_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("Untitled note");
+        let timestamp_ms = current_timestamp_ms()?;
+        let current_note_id = note_path
+            .strip_prefix(notes_root)
+            .map_err(|error| format!("Failed to resolve note id for {}: {error}", note_path.display()))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let file_name = note_path
+            .file_name()
+            .ok_or_else(|| format!("Failed to resolve a file name for {}.", note_path.display()))?;
+        let next_note_path = next_directory.join(file_name);
+        let rewritten_body = rewrite_markdown_relative_paths(existing_body, &current_directory, &next_directory);
+        let next_content = build_note_content_with_metadata(
+            existing_frontmatter,
+            &rewritten_body,
+            fallback_title,
+            &format!("note-{timestamp_ms}"),
+            timestamp_ms,
+            None,
+            Some(Some(next_name.to_string())),
+            None,
+        );
+
+        fs::write(&next_note_path, &next_content)
+            .map_err(|error| format!("Failed to save note file {}: {error}", next_note_path.display()))?;
+        fs::remove_file(&note_path)
+            .map_err(|error| format!("Failed to remove the original note file {}: {error}", note_path.display()))?;
+
+        let next_note_id = next_note_path
+            .strip_prefix(notes_root)
+            .map_err(|error| format!("Failed to resolve note id for {}: {error}", next_note_path.display()))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        affected_note_ids.push(next_note_id.clone());
+        renamed_note_ids.insert(current_note_id, next_note_id);
+    }
+
+    fs::remove_dir_all(&current_directory)
+        .map_err(|error| format!("Failed to remove the old notebook directory {}: {error}", current_directory.display()))?;
+
+    Ok(NotebookMutationResponse {
+        message: format!("Renamed notebook {} to {}.", current_name, next_name),
+        notebook_name: Some(next_name.to_string()),
+        affected_note_ids,
+        renamed_note_ids,
+    })
+}
+
+#[tauri::command]
+fn delete_notebook(
+    root_path: String,
+    payload: DeleteNotebookPayload,
+) -> Result<NotebookMutationResponse, String> {
+    let notebook_name = payload.notebook.trim();
+    if notebook_name.is_empty() {
+        return Err("Notebook name cannot be empty.".to_string());
+    }
+
+    let layout = ensure_library_layout(&root_path)?;
+    let notes_root = Path::new(&layout.notes_root);
+    let notebook_directory = notes_root.join("notebooks").join(sanitize_path_component(notebook_name));
+    if !notebook_directory.exists() {
+        return Err(format!("Notebook {} does not exist.", notebook_name));
+    }
+
+    let mut markdown_files = Vec::new();
+    collect_markdown_files(&notebook_directory, &mut markdown_files)?;
+    let affected_note_ids = markdown_files
+        .iter()
+        .filter_map(|path| {
+            path.strip_prefix(notes_root)
+                .ok()
+                .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+        })
+        .collect::<Vec<_>>();
+
+    fs::remove_dir_all(&notebook_directory)
+        .map_err(|error| format!("Failed to delete notebook {}: {error}", notebook_directory.display()))?;
+
+    Ok(NotebookMutationResponse {
+        message: format!("Deleted notebook {} and its contents.", notebook_name),
+        notebook_name: None,
+        affected_note_ids,
+        renamed_note_ids: HashMap::new(),
+    })
 }
 
 #[tauri::command]
@@ -2368,8 +2662,12 @@ pub fn run() {
             create_note,
             load_note_document,
             save_note_document,
+            rename_note,
+            delete_note,
             update_note_tags,
             move_note_to_notebook,
+            rename_notebook,
+            delete_notebook,
             import_asset,
             inspect_note_connections,
             list_library_assets,

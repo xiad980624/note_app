@@ -828,6 +828,18 @@
   border-color: rgba(193, 198, 215, 0.28);
 }
 
+.context-menu-item-danger {
+  justify-content: center;
+  background: rgba(196, 52, 43, 0.08);
+  border-color: rgba(196, 52, 43, 0.14);
+  color: #9b2d25;
+}
+
+.context-menu-item-danger:hover {
+  background: rgba(196, 52, 43, 0.12);
+  border-color: rgba(196, 52, 43, 0.18);
+}
+
 .context-menu-item-meta {
   color: var(--ink-soft);
   font-size: 0.72rem;
