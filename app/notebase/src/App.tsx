@@ -23,7 +23,9 @@ const SYNC_CONFIG_KEY = 'notebase:sync-config'
 const SELECTED_NOTE_KEY = 'notebase:selected-note-id'
 const NOTEBOOKS_KEY = 'notebase:notebooks'
 const INVOKE_TIMEOUT_MS = 12000
+const MIN_SAVE_SPINNER_MS = 450
 const BROWSER_LOCAL_PATH_PLACEHOLDER = '~/Documents/NoteBase'
+const DEFAULT_NOTE_TITLE = 'Untitled note'
 
 type SaveStatus = 'idle' | 'dirty' | 'saving' | 'saved' | 'error'
 type SyncButtonTone = 'idle' | 'warning' | 'active' | 'busy'
@@ -318,6 +320,37 @@ const collectLibraryTags = (notes: RealNoteSummary[]) => {
   }
 
   return Array.from(seen).sort((left, right) => left.localeCompare(right))
+}
+
+const splitEditableNoteContent = (rawBody: string, fallbackTitle = DEFAULT_NOTE_TITLE) => {
+  const normalizedBody = rawBody.replace(/\r\n/g, '\n')
+  const titleMatch = normalizedBody.match(/^#\s+(.+?)(?:\n|$)/)
+
+  if (!titleMatch) {
+    return {
+      title: fallbackTitle,
+      body: normalizedBody,
+    }
+  }
+
+  const title = titleMatch[1].trim() || fallbackTitle
+  let body = normalizedBody.slice(titleMatch[0].length).replace(/^\n+/, '')
+  if (title === DEFAULT_NOTE_TITLE && body.trim() === 'Start writing...') {
+    body = ''
+  }
+
+  return { title, body }
+}
+
+const composeEditableNoteContent = (title: string, body: string) => {
+  const normalizedTitle = title.trim() || DEFAULT_NOTE_TITLE
+  const normalizedBody = body.replace(/\r\n/g, '\n').replace(/^\n+/, '')
+
+  if (!normalizedBody) {
+    return `# ${normalizedTitle}`
+  }
+
+  return `# ${normalizedTitle}\n\n${normalizedBody}`
 }
 
 const formattingTools: Array<{
@@ -1056,13 +1089,16 @@ function App() {
     x: number
     y: number
   } | null>(null)
+  const [menuNotebookDraft, setMenuNotebookDraft] = useState('')
   const [wikilinkDraft, setWikilinkDraft] = useState<WikilinkDraft | null>(null)
   const [wikilinkIndex, setWikilinkIndex] = useState(0)
+  const [editorTitle, setEditorTitle] = useState(DEFAULT_NOTE_TITLE)
   const [editorBody, setEditorBody] = useState('')
+  const [lastSavedTitle, setLastSavedTitle] = useState(DEFAULT_NOTE_TITLE)
   const [lastSavedBody, setLastSavedBody] = useState('')
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
   const [saveMessage, setSaveMessage] = useState('Select a note to start editing.')
-  const [editorViewMode, setEditorViewMode] = useState<EditorViewMode>('rich-text')
+  const [editorViewMode, setEditorViewMode] = useState<EditorViewMode>('markdown')
   const [syncConfig, setSyncConfig] = useState<SyncConfig | null>(() => loadStoredSyncConfig())
   const [draftSyncConfig, setDraftSyncConfig] = useState<SyncConfig>(() => loadStoredSyncConfig() ?? emptySyncConfig)
   const [syncStatus, setSyncStatus] = useState<SyncStatusResponse>(
@@ -1091,7 +1127,9 @@ function App() {
   const [selectedMediaAssetId, setSelectedMediaAssetId] = useState<string | null>(null)
 
   const runningInTauri = useMemo(() => isTauriRuntime(), [])
-  const hasUnsavedChanges = selectedNoteDocument ? editorBody !== lastSavedBody : false
+  const hasUnsavedChanges = selectedNoteDocument
+    ? editorTitle !== lastSavedTitle || editorBody !== lastSavedBody
+    : false
   const syncButtonTone = syncToneFromStatus(syncStatus, syncBusy)
   const editorTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const richTextEditorRef = useRef<HTMLDivElement | null>(null)
@@ -1107,6 +1145,9 @@ function App() {
       journal: [],
     }
     for (const note of knowledgeBaseIndex.notes) {
+      if (note.notebook?.trim()) {
+        continue
+      }
       groups[note.documentType ?? 'note'].push(note)
     }
     return groups
@@ -1171,7 +1212,10 @@ function App() {
       )
       .slice(0, 6)
   }, [editorViewMode, knowledgeBaseIndex.notes, selectedNoteId, wikilinkDraft, workspaceView])
-  const previewBlocks = useMemo(() => renderPreviewBlocks(editorBody), [editorBody])
+  const previewBlocks = useMemo(
+    () => renderPreviewBlocks(composeEditableNoteContent(editorTitle, editorBody)),
+    [editorBody, editorTitle],
+  )
   const [assetPickerKind, setAssetPickerKind] = useState<AssetImportKind>('image')
   const libraryTags = useMemo(() => collectLibraryTags(knowledgeBaseIndex.notes), [knowledgeBaseIndex.notes])
   const noteConnectionsStatusMessage = !selectedNote
@@ -1179,6 +1223,10 @@ function App() {
     : !runningInTauri
       ? 'Link inspection requires the Tauri desktop runtime.'
       : noteConnections.message
+  const noteMenuTarget =
+    noteMenuState
+      ? knowledgeBaseIndex.notes.find((note) => note.id === noteMenuState.noteId) ?? null
+      : null
 
   const syncRichTextEditorFromMarkdown = useCallback(
     (markdownBody: string) => {
@@ -1241,7 +1289,9 @@ function App() {
     })
     if (indexResponse.notes.length === 0) {
       setSelectedNoteDocument(null)
+      setEditorTitle(DEFAULT_NOTE_TITLE)
       setEditorBody('')
+      setLastSavedTitle(DEFAULT_NOTE_TITLE)
       setLastSavedBody('')
       setSaveStatus('idle')
       setSaveMessage('Select a note to start editing.')
@@ -1282,9 +1332,12 @@ function App() {
         rootPath,
         noteId,
       })
+      const editableNote = splitEditableNoteContent(response.body, response.note.title || DEFAULT_NOTE_TITLE)
       setSelectedNoteDocument(response)
-      setEditorBody(response.body)
-      setLastSavedBody(response.body)
+      setEditorTitle(editableNote.title)
+      setEditorBody(editableNote.body)
+      setLastSavedTitle(editableNote.title)
+      setLastSavedBody(editableNote.body)
       setPendingTags(response.note.tags.join(', '))
       setSaveStatus('idle')
       setSaveMessage(response.message)
@@ -1292,7 +1345,9 @@ function App() {
       const message =
         error instanceof Error ? error.message : 'Failed to load the selected note content.'
       setSelectedNoteDocument(null)
+      setEditorTitle(DEFAULT_NOTE_TITLE)
       setEditorBody('')
+      setLastSavedTitle(DEFAULT_NOTE_TITLE)
       setLastSavedBody('')
       setSaveStatus('error')
       setSaveMessage(message)
@@ -1455,16 +1510,38 @@ function App() {
         return
       }
 
-      if (nextBody === lastSavedBody) {
+      if (editorTitle === lastSavedTitle && nextBody === lastSavedBody) {
         setSaveStatus('idle')
         setSaveMessage('No unsaved changes.')
         return
       }
 
       setSaveStatus('dirty')
-      setSaveMessage('Unsaved markdown changes.')
+      setSaveMessage('Unsaved changes.')
     },
-    [lastSavedBody, selectedNoteDocument],
+    [editorTitle, lastSavedBody, lastSavedTitle, selectedNoteDocument],
+  )
+
+  const handleEditorTitleChange = useCallback(
+    (nextTitle: string) => {
+      setEditorTitle(nextTitle)
+
+      if (!selectedNoteDocument) {
+        setSaveStatus('idle')
+        setSaveMessage('Select a note to start editing.')
+        return
+      }
+
+      if (nextTitle === lastSavedTitle && editorBody === lastSavedBody) {
+        setSaveStatus('idle')
+        setSaveMessage('No unsaved changes.')
+        return
+      }
+
+      setSaveStatus('dirty')
+      setSaveMessage('Unsaved changes.')
+    },
+    [editorBody, lastSavedBody, lastSavedTitle, selectedNoteDocument],
   )
 
   const applyTextSelection = useCallback((selectionStart: number, selectionEnd: number) => {
@@ -1829,73 +1906,6 @@ function App() {
     ],
   )
 
-  const handleRichTextInput = () => {
-    syncMarkdownFromRichTextEditor()
-  }
-
-  const handleRichTextKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== 'Tab') {
-      return
-    }
-
-    const selection = window.getSelection()
-    const anchorNode = selection?.anchorNode
-    const parentElement =
-      anchorNode instanceof HTMLElement ? anchorNode : anchorNode?.parentElement ?? null
-    const preElement = parentElement?.closest('pre')
-
-    if (!preElement || event.shiftKey) {
-      return
-    }
-
-    event.preventDefault()
-    document.execCommand('insertText', false, '  ')
-    syncMarkdownFromRichTextEditor()
-  }
-
-  const handleRichTextDrop = async (event: React.DragEvent<HTMLDivElement>) => {
-    if (editorViewMode !== 'rich-text' || !selectedNote) {
-      return
-    }
-
-    const hasFiles = Array.from(event.dataTransfer.types).includes('Files')
-    if (!hasFiles) {
-      return
-    }
-
-    event.preventDefault()
-    setIsDragActive(false)
-
-    const files = Array.from(event.dataTransfer.files)
-    if (files.length === 0) {
-      return
-    }
-
-    await importAssetFiles(files)
-  }
-
-  const handleRichTextDragOver = (event: React.DragEvent<HTMLDivElement>) => {
-    if (editorViewMode !== 'rich-text' || !selectedNote) {
-      return
-    }
-
-    const hasFiles = Array.from(event.dataTransfer.types).includes('Files')
-    if (!hasFiles) {
-      return
-    }
-
-    event.preventDefault()
-    setIsDragActive(true)
-  }
-
-  const handleRichTextDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
-    if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
-      return
-    }
-
-    setIsDragActive(false)
-  }
-
   const handleOpenLocalPath = async (path: string, mode: 'open' | 'reveal') => {
     if (!runningInTauri) {
       setSaveStatus('error')
@@ -2045,18 +2055,27 @@ function App() {
           ? 'Autosaving note to the local offline library...'
           : 'Saving note to the local offline library...',
       )
+      const saveStartedAt = Date.now()
 
       try {
+        const composedBody = composeEditableNoteContent(editorTitle, editorBody)
         const response = await invokeWithTimeout<NoteDocument>('save_note_document', {
           rootPath: localRootPath,
           payload: {
             noteId: selectedNoteId,
-            body: editorBody,
+            body: composedBody,
           },
         })
+        const elapsedMs = Date.now() - saveStartedAt
+        if (elapsedMs < MIN_SAVE_SPINNER_MS) {
+          await new Promise((resolve) => window.setTimeout(resolve, MIN_SAVE_SPINNER_MS - elapsedMs))
+        }
+        const editableNote = splitEditableNoteContent(response.body, response.note.title || DEFAULT_NOTE_TITLE)
         setSelectedNoteDocument(response)
-        setEditorBody(response.body)
-        setLastSavedBody(response.body)
+        setEditorTitle(editableNote.title)
+        setEditorBody(editableNote.body)
+        setLastSavedTitle(editableNote.title)
+        setLastSavedBody(editableNote.body)
         setSaveStatus('saved')
         setSaveMessage(
           mode === 'autosave'
@@ -2073,6 +2092,7 @@ function App() {
       }
     },
     [
+      editorTitle,
       editorBody,
       hasUnsavedChanges,
       localRootPath,
@@ -2397,6 +2417,11 @@ function App() {
     setSettingsPanelOpen(true)
   }, [])
 
+  const closeNoteMenu = useCallback(() => {
+    setNoteMenuState(null)
+    setMenuNotebookDraft('')
+  }, [])
+
   const handleCreateNotebook = useCallback((notebookName: string) => {
     const normalizedName = notebookName.trim()
     if (!normalizedName) {
@@ -2482,12 +2507,13 @@ function App() {
     }
 
     try {
+      const currentNote = knowledgeBaseIndex.notes.find((note) => note.id === noteId) ?? null
       if (notebook) {
         setStoredNotebooks((current) =>
           current.includes(notebook) ? current : [...current, notebook].sort((a, b) => a.localeCompare(b)),
         )
       }
-      await invokeWithTimeout<NoteDocument>('move_note_to_notebook', {
+      const response = await invokeWithTimeout<NoteDocument>('move_note_to_notebook', {
         rootPath: localRootPath,
         payload: {
           noteId,
@@ -2495,25 +2521,24 @@ function App() {
         },
       })
       await refreshLocalWorkspace(localRootPath)
-      setNoteMenuState(null)
+      closeNoteMenu()
       draggedNoteIdRef.current = null
       setDragTargetNotebook(null)
       if (notebook) {
         setExpandedSections((current) => ({ ...current, notebooks: true }))
         setActiveDirectorySelection({ kind: 'notebook', value: notebook })
-        setSelectedNoteId(noteId)
+        setSelectedNoteId(response.note.id)
+      } else {
+        setActiveDirectorySelection({ kind: 'type', value: currentNote?.documentType ?? 'note' })
+        setSelectedNoteId(response.note.id)
       }
       setSaveStatus('saved')
-      setSaveMessage(notebook ? `Moved note to ${notebook}.` : 'Removed note from notebook.')
-      if (activeDirectorySelection.kind === 'notebook' && notebook !== activeDirectorySelection.value) {
-        setActiveDirectorySelection({ kind: 'type', value: 'note' })
-        setSelectedNoteId(null)
-      }
+      setSaveMessage(notebook ? `Moved note into ${notebook}.` : 'Moved note back to its primary list.')
     } catch (error) {
       setSaveStatus('error')
-      setSaveMessage(error instanceof Error ? error.message : 'Failed to move the selected note.')
+      setSaveMessage(error instanceof Error ? error.message : 'Failed to update the selected notebook.')
     }
-  }, [activeDirectorySelection, localRootPath, refreshLocalWorkspace, runningInTauri])
+  }, [closeNoteMenu, knowledgeBaseIndex.notes, localRootPath, refreshLocalWorkspace, runningInTauri])
 
   const handleSaveTags = useCallback(async () => {
     if (!selectedNote || !runningInTauri) {
@@ -3122,7 +3147,7 @@ function App() {
                     title={editorViewMode === 'preview' ? 'Write' : 'Preview'}
                     aria-label={editorViewMode === 'preview' ? 'Write' : 'Preview'}
                     onClick={() =>
-                      setEditorViewMode((current) => (current === 'preview' ? 'rich-text' : 'preview'))
+                      setEditorViewMode((current) => (current === 'preview' ? 'markdown' : 'preview'))
                     }
                   >
                     <AppIcon
@@ -3245,21 +3270,17 @@ function App() {
                         </div>
                       ) : (
                         <div className="writer-stack">
-                          <div
-                            ref={richTextEditorRef}
-                            className={`rich-text-editor rich-text-editor-writing ${isDragActive ? 'drag-active' : ''}`}
-                            contentEditable
-                            suppressContentEditableWarning
-                            onInput={handleRichTextInput}
-                            onKeyDown={handleRichTextKeyDown}
-                            onDragOver={handleRichTextDragOver}
-                            onDragLeave={handleRichTextDragLeave}
-                            onDrop={(event) => void handleRichTextDrop(event)}
+                          <input
+                            className="editor-title-field"
+                            value={editorTitle}
+                            onChange={(event) => handleEditorTitleChange(event.target.value)}
+                            placeholder={DEFAULT_NOTE_TITLE}
                           />
                           <textarea
                             ref={editorTextareaRef}
-                            className="markdown-editor-assist"
+                            className={`markdown-editor ${isDragActive ? 'drag-active' : ''}`}
                             value={editorBody}
+                            placeholder="Start writing..."
                             onChange={handleEditorBodyChange}
                             onKeyDown={handleEditorKeyDown}
                             onClick={(event) =>
@@ -3276,9 +3297,37 @@ function App() {
                                 event.currentTarget.selectionEnd,
                               )
                             }
+                            onDragOver={(event) => {
+                              const hasFiles = Array.from(event.dataTransfer.types).includes('Files')
+                              if (!hasFiles) {
+                                return
+                              }
+                              event.preventDefault()
+                              setIsDragActive(true)
+                            }}
+                            onDragLeave={(event) => {
+                              if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                                return
+                              }
+                              setIsDragActive(false)
+                            }}
+                            onDrop={(event) => {
+                              const hasFiles = Array.from(event.dataTransfer.types).includes('Files')
+                              if (!hasFiles) {
+                                return
+                              }
+                              event.preventDefault()
+                              setIsDragActive(false)
+                              pendingSelectionRef.current = {
+                                start: event.currentTarget.selectionStart,
+                                end: event.currentTarget.selectionEnd,
+                              }
+                              const files = Array.from(event.dataTransfer.files)
+                              if (files.length > 0) {
+                                void importAssetFiles(files)
+                              }
+                            }}
                             spellCheck={false}
-                            aria-hidden="true"
-                            tabIndex={-1}
                           />
                           {wikilinkDraft && wikilinkSuggestions.length > 0 ? (
                             <div className="wikilink-card">
@@ -3810,44 +3859,88 @@ function App() {
       ) : null}
 
       {noteMenuState ? (
-        <div className="context-menu-shell" role="presentation" onClick={() => setNoteMenuState(null)}>
+        <div className="context-menu-shell" role="presentation" onClick={closeNoteMenu}>
           <div
             className="note-context-menu"
             role="menu"
             style={{ top: noteMenuState.y, left: noteMenuState.x }}
             onClick={(event) => event.stopPropagation()}
           >
-            <strong>Move to notebook</strong>
-            <button type="button" className="context-menu-item" onClick={() => void handleMoveNoteToNotebook(noteMenuState.noteId, null)}>
-              Remove from notebook
-            </button>
+            <div className="note-context-menu-header">
+              <p className="section-label">Notebook</p>
+              <strong>{noteMenuTarget?.title ?? 'Selected note'}</strong>
+              <span>
+                {noteMenuTarget?.notebook
+                  ? `Currently in ${noteMenuTarget.notebook}`
+                  : 'This note is only in its primary document list'}
+              </span>
+            </div>
+
             {notebookList.length > 0 ? (
-              notebookList.map((notebook) => (
-                <button
-                  key={notebook.name}
-                  type="button"
-                  className="context-menu-item"
-                  onClick={() => void handleMoveNoteToNotebook(noteMenuState.noteId, notebook.name)}
-                >
-                  {notebook.name}
-                </button>
-              ))
+              <div className="note-context-menu-list">
+                {notebookList.map((notebook) => (
+                  <button
+                    key={notebook.name}
+                    type="button"
+                    className={`context-menu-item ${
+                      noteMenuTarget?.notebook === notebook.name ? 'context-menu-item-active' : ''
+                    }`}
+                    onClick={() => void handleMoveNoteToNotebook(noteMenuState.noteId, notebook.name)}
+                  >
+                    <span>{notebook.name}</span>
+                    <span className="context-menu-item-meta">{notebook.count}</span>
+                  </button>
+                ))}
+              </div>
             ) : (
-              <span className="context-menu-empty">No notebooks available yet.</span>
+              <span className="context-menu-empty">No notebooks yet. Create the first one below.</span>
             )}
-            <button
-              type="button"
-              className="context-menu-item"
-              onClick={() => {
-                const notebookName = window.prompt('Notebook name')
-                if (!notebookName?.trim()) {
-                  return
-                }
-                void handleMoveNoteToNotebook(noteMenuState.noteId, notebookName.trim())
-              }}
-            >
-              New notebook...
-            </button>
+
+            <div className="note-context-menu-create">
+              <input
+                value={menuNotebookDraft}
+                onChange={(event) => setMenuNotebookDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    const notebookName = menuNotebookDraft.trim()
+                    if (!notebookName) {
+                      return
+                    }
+                    void handleMoveNoteToNotebook(noteMenuState.noteId, notebookName)
+                  }
+                  if (event.key === 'Escape') {
+                    closeNoteMenu()
+                  }
+                }}
+                className="note-context-menu-input"
+                placeholder="New notebook"
+                autoFocus
+              />
+              <button
+                type="button"
+                className="note-context-menu-action"
+                onClick={() => {
+                  const notebookName = menuNotebookDraft.trim()
+                  if (!notebookName) {
+                    return
+                  }
+                  void handleMoveNoteToNotebook(noteMenuState.noteId, notebookName)
+                }}
+              >
+                Add
+              </button>
+            </div>
+
+            {noteMenuTarget?.notebook ? (
+              <button
+                type="button"
+                className="context-menu-item context-menu-item-secondary"
+                onClick={() => void handleMoveNoteToNotebook(noteMenuState.noteId, null)}
+              >
+                Remove from notebook
+              </button>
+            ) : null}
           </div>
         </div>
       ) : null}

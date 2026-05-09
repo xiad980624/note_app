@@ -764,28 +764,48 @@
 
 .note-context-menu {
   position: fixed;
-  min-width: 190px;
+  min-width: 260px;
   display: grid;
-  gap: 4px;
-  padding: 10px;
-  border-radius: 10px;
-  border: 1px solid rgba(193, 198, 215, 0.3);
-  background: rgba(255, 255, 255, 0.98);
-  box-shadow: 0 14px 32px rgba(16, 24, 40, 0.16);
+  gap: 12px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(193, 198, 215, 0.28);
+  background: rgba(255, 255, 255, 0.985);
+  box-shadow: 0 18px 36px rgba(16, 24, 40, 0.14);
 }
 
-.note-context-menu strong {
+.note-context-menu-header {
+  display: grid;
+  gap: 4px;
+}
+
+.note-context-menu-header strong {
   color: var(--ink-strong);
-  font-size: 0.72rem;
-  padding: 2px 6px 6px;
+  font-size: 0.86rem;
+  font-weight: 620;
+}
+
+.note-context-menu-header span {
+  color: var(--ink-soft);
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+.note-context-menu-list {
+  display: grid;
+  gap: 6px;
 }
 
 .context-menu-item {
   width: 100%;
-  padding: 8px 10px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: rgba(247, 247, 250, 0.82);
   color: var(--ink);
   text-align: left;
   font: inherit;
@@ -793,13 +813,65 @@
 }
 
 .context-menu-item:hover {
-  background: rgba(0, 88, 188, 0.08);
+  background: rgba(29, 111, 242, 0.08);
+  border-color: rgba(29, 111, 242, 0.14);
+}
+
+.context-menu-item-active {
+  background: rgba(29, 111, 242, 0.1);
+  border-color: rgba(29, 111, 242, 0.18);
+}
+
+.context-menu-item-secondary {
+  justify-content: center;
+  background: transparent;
+  border-color: rgba(193, 198, 215, 0.28);
+}
+
+.context-menu-item-meta {
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+}
+
+.note-context-menu-create {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.note-context-menu-input {
+  min-width: 0;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(193, 198, 215, 0.28);
+  background: rgba(247, 247, 250, 0.82);
+  color: var(--ink-strong);
+  font: inherit;
+}
+
+.note-context-menu-input:focus {
+  outline: none;
+  border-color: rgba(29, 111, 242, 0.26);
+  box-shadow: 0 0 0 3px rgba(29, 111, 242, 0.1);
+}
+
+.note-context-menu-action {
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(29, 111, 242, 0.16);
+  background: rgba(29, 111, 242, 0.1);
+  color: rgba(17, 85, 184, 0.92);
+  font-size: 0.76rem;
+  font-weight: 600;
 }
 
 .context-menu-empty {
-  padding: 8px 10px;
+  padding: 2px 2px 0;
   color: var(--ink-soft);
   font-size: 0.76rem;
+  line-height: 1.4;
 }
 
 .note-card.active {
@@ -1073,7 +1145,9 @@
 }
 
 .editor-surface {
-  padding: 14px 18px 18px;
+  padding: 8px 0 0;
+  background: transparent;
+  border: 0;
 }
 
 .editor-surface-writing {
@@ -1086,14 +1160,15 @@
 
 .markdown-editor {
   width: 100%;
-  min-height: 320px;
-  padding: 14px 16px;
-  border-radius: 8px;
-  background: #fff;
-  border: 1px solid rgba(193, 198, 215, 0.35);
+  min-height: 620px;
+  padding: 10px 4px 24px;
+  border-radius: 0;
+  background: transparent;
+  border: 0;
   color: var(--ink);
   resize: vertical;
-  font: 0.88rem/1.6 var(--mono);
+  font: 0.96rem/1.48 var(--font-sans, inherit);
+  letter-spacing: 0;
 }
 
 .markdown-editor-stack {
@@ -1115,6 +1190,24 @@
   gap: 12px;
 }
 
+.editor-title-field {
+  width: 100%;
+  padding: 4px 0 10px;
+  border: 0;
+  background: transparent;
+  color: var(--ink-strong);
+  font: 600 1.34rem/1.25 var(--font-sans, inherit);
+  letter-spacing: 0;
+}
+
+.editor-title-field:focus {
+  outline: none;
+}
+
+.editor-title-field::placeholder {
+  color: rgba(39, 45, 58, 0.44);
+}
+
 .editor-meta-strip {
   display: flex;
   flex-wrap: wrap;
@@ -1132,14 +1225,12 @@
 }
 
 .markdown-editor:focus {
-  outline: 2px solid rgba(29, 111, 242, 0.18);
-  border-color: rgba(29, 111, 242, 0.45);
+  outline: none;
 }
 
 .markdown-editor.drag-active {
-  border-color: rgba(29, 111, 242, 0.75);
-  background: rgba(232, 242, 255, 0.98);
-  box-shadow: inset 0 0 0 1px rgba(29, 111, 242, 0.18);
+  background: rgba(232, 242, 255, 0.68);
+  box-shadow: inset 0 0 0 1px rgba(29, 111, 242, 0.16);
 }
 
 .wikilink-card {
