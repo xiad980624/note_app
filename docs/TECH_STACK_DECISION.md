@@ -106,7 +106,11 @@ KnowledgeBase/
 - `.notebase/index.db` 保存搜索索引、关系索引和缓存信息。
 - 用户真实数据以文件为准，数据库可重建。
 - 文档移动到 notebook 时，需要同步维护正文中的相对附件路径。
-- 历史测试库可能仍存在 `inbox / projects / topics` 等旧目录，后续需要提供迁移或兼容逻辑。
+- 历史测试库可能仍存在 `inbox / projects / topics` 等旧目录；当前 Tauri 后端在加载知识库时迁移其中的 markdown 文件：
+  - `inbox` 迁移为未归档 `notes/note/`
+  - `projects` 迁移为 notebook `Projects`
+  - `topics` 迁移为 notebook `Topics`
+- 对于位于 `notes/notebooks/<Notebook Name>/` 但缺少 frontmatter 的文档，索引层会从路径推断 `notebook`。
 
 ## 6. 后续优化方向
 
@@ -116,7 +120,7 @@ KnowledgeBase/
 - 删除同步与墓碑记录，避免“只复制不清理”导致的残留文件。
 - 冲突解决 UI，包括逐文件比较、保留哪一侧、或生成副本。
 - 同步历史、失败恢复、重试队列和后台自动同步策略。
-- 旧知识库目录结构迁移工具：把 `inbox / projects / topics` 迁移到新的 `documentType + notebook` 结构。
+- 旧知识库目录迁移的可视化确认与迁移日志。
 
 ## 5. 开发顺序确认
 
