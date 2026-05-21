@@ -161,7 +161,11 @@ KnowledgeBase/
 - 未归类文档按 `documentType` 存放在主类型目录下，例如 `notes/note/`、`notes/todo/`、`notes/journal/`。
 - 已归类到 notebook 的文档应物理移动到 `notes/notebooks/<Notebook Name>/` 下，而不是仅更新元数据。
 - 文档移动到 notebook 时，必须同步维护其内部相对附件路径，避免图片与文件引用失效。
-- 早期测试库中可能仍然存在 `inbox / projects / topics` 等历史目录；正式版本需要提供迁移或兼容策略。
+- 早期测试库中可能仍然存在 `inbox / projects / topics` 等历史目录；当前版本在加载知识库时自动迁移 markdown 文件：
+  - `inbox` -> `notes/note/`
+  - `projects` -> `notes/notebooks/Projects/`
+  - `topics` -> `notes/notebooks/Topics/`
+- 迁移时需要补齐 `documentType` / `notebook` 元数据，并同步维护正文中的相对附件路径。
 
 ### 4.5 跨端支持
 #### macOS

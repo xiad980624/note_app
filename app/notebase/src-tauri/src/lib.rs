@@ -373,7 +373,10 @@ impl SyncConfigPayload {
             format!(":{port}")
         };
 
-        format!("{protocol}://{credentials}{host}{port_segment}{}", remote_path)
+        format!(
+            "{protocol}://{credentials}{host}{port_segment}{}",
+            remote_path
+        )
     }
 }
 
@@ -396,7 +399,8 @@ fn normalize_root_path(root_path: &str) -> String {
 }
 
 fn default_local_library_path() -> Result<String, String> {
-    let home = env::var("HOME").map_err(|error| format!("Failed to read HOME for local library path: {error}"))?;
+    let home = env::var("HOME")
+        .map_err(|error| format!("Failed to read HOME for local library path: {error}"))?;
     Ok(format!("{home}/Documents/NoteBase"))
 }
 
@@ -416,9 +420,10 @@ fn ensure_library_layout(root_path: &str) -> Result<LibraryLayout, String> {
     let directories = [
         normalized_root.clone(),
         notes_root.clone(),
-        format!("{notes_root}/inbox"),
-        format!("{notes_root}/projects"),
-        format!("{notes_root}/topics"),
+        format!("{notes_root}/note"),
+        format!("{notes_root}/todo"),
+        format!("{notes_root}/journal"),
+        format!("{notes_root}/notebooks"),
         assets_root.clone(),
         format!("{assets_root}/images"),
         format!("{assets_root}/files"),
@@ -431,8 +436,9 @@ fn ensure_library_layout(root_path: &str) -> Result<LibraryLayout, String> {
     };
 
     for directory in directories {
-        fs::create_dir_all(&directory)
-            .map_err(|error| format!("Failed to create knowledge base directory {directory}: {error}"))?;
+        fs::create_dir_all(&directory).map_err(|error| {
+            format!("Failed to create knowledge base directory {directory}: {error}")
+        })?;
     }
 
     Ok(LibraryLayout {
@@ -442,6 +448,96 @@ fn ensure_library_layout(root_path: &str) -> Result<LibraryLayout, String> {
         hidden_root,
         initialized_new_knowledge_base,
     })
+    .and_then(|layout| {
+        migrate_legacy_note_directories(&layout)?;
+        Ok(layout)
+    })
+}
+
+fn migrate_legacy_note_directories(layout: &LibraryLayout) -> Result<(), String> {
+    let notes_root = Path::new(&layout.notes_root);
+    let legacy_directories = [
+        ("inbox", None),
+        ("projects", Some("Projects")),
+        ("topics", Some("Topics")),
+    ];
+
+    for (legacy_folder, target_notebook) in legacy_directories {
+        let legacy_directory = notes_root.join(legacy_folder);
+        if !legacy_directory.exists() {
+            continue;
+        }
+
+        let mut markdown_files = Vec::new();
+        collect_markdown_files(&legacy_directory, &mut markdown_files)?;
+
+        for note_path in markdown_files {
+            let existing_raw_content = fs::read_to_string(&note_path).map_err(|error| {
+                format!(
+                    "Failed to read legacy note file {}: {error}",
+                    note_path.display()
+                )
+            })?;
+            let (existing_frontmatter, existing_body) =
+                parse_frontmatter_block(&existing_raw_content);
+            let document_type = extract_document_type(existing_frontmatter);
+            let fallback_title = note_path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("Untitled note");
+            let timestamp_ms = current_timestamp_ms()?;
+            let target_relative_directory =
+                note_container_relative_directory(&document_type, target_notebook);
+            let target_directory = notes_root.join(&target_relative_directory);
+            fs::create_dir_all(&target_directory).map_err(|error| {
+                format!(
+                    "Failed to prepare migrated note directory {}: {error}",
+                    target_directory.display()
+                )
+            })?;
+
+            let file_name = note_path.file_name().ok_or_else(|| {
+                format!("Failed to resolve a file name for {}.", note_path.display())
+            })?;
+            let next_note_path = ensure_unique_file_path(target_directory.join(file_name));
+            let current_directory = note_path.parent().ok_or_else(|| {
+                format!(
+                    "Failed to resolve a parent directory for {}.",
+                    note_path.display()
+                )
+            })?;
+            let rewritten_body = rewrite_markdown_relative_paths(
+                existing_body,
+                current_directory,
+                &target_directory,
+            );
+            let next_content = build_note_content_with_metadata(
+                existing_frontmatter,
+                &rewritten_body,
+                fallback_title,
+                &format!("note-{timestamp_ms}"),
+                timestamp_ms,
+                Some(document_type),
+                Some(target_notebook.map(ToString::to_string)),
+                None,
+            );
+
+            fs::write(&next_note_path, next_content).map_err(|error| {
+                format!(
+                    "Failed to write migrated note file {}: {error}",
+                    next_note_path.display()
+                )
+            })?;
+            fs::remove_file(&note_path).map_err(|error| {
+                format!(
+                    "Failed to remove legacy note file {}: {error}",
+                    note_path.display()
+                )
+            })?;
+        }
+    }
+
+    Ok(())
 }
 
 fn layout_to_index_response(layout: &LibraryLayout, message: String) -> KnowledgeBaseIndexResponse {
@@ -482,8 +578,12 @@ fn save_sync_manifest(local_root_path: &str, manifest: &SyncManifest) -> Result<
 }
 
 fn collect_markdown_files(directory: &Path, output: &mut Vec<PathBuf>) -> Result<(), String> {
-    let entries = fs::read_dir(directory)
-        .map_err(|error| format!("Failed to read notes directory {}: {error}", directory.display()))?;
+    let entries = fs::read_dir(directory).map_err(|error| {
+        format!(
+            "Failed to read notes directory {}: {error}",
+            directory.display()
+        )
+    })?;
 
     for entry in entries {
         let entry = entry.map_err(|error| {
@@ -524,8 +624,12 @@ fn collect_all_files(directory: &Path, output: &mut Vec<PathBuf>) -> Result<(), 
         .map_err(|error| format!("Failed to read directory {}: {error}", directory.display()))?;
 
     for entry in entries {
-        let entry = entry
-            .map_err(|error| format!("Failed while iterating directory {}: {error}", directory.display()))?;
+        let entry = entry.map_err(|error| {
+            format!(
+                "Failed while iterating directory {}: {error}",
+                directory.display()
+            )
+        })?;
         let path = entry.path();
         let file_type = entry.file_type().map_err(|error| {
             format!(
@@ -663,6 +767,26 @@ fn note_container_relative_directory(document_type: &str, notebook: Option<&str>
     }
 }
 
+fn infer_document_type_from_relative_path(relative_path: &str, fallback: String) -> String {
+    let first_component = relative_path.split('/').next().unwrap_or_default();
+    match first_component {
+        "todo" => "todo".to_string(),
+        "journal" => "journal".to_string(),
+        "note" | "inbox" | "projects" | "topics" => "note".to_string(),
+        _ => fallback,
+    }
+}
+
+fn infer_notebook_from_relative_path(relative_path: &str) -> Option<String> {
+    let mut components = relative_path.split('/');
+    match (components.next(), components.next()) {
+        (Some("notebooks"), Some(notebook_name)) if !notebook_name.trim().is_empty() => {
+            Some(notebook_name.trim().to_string())
+        }
+        _ => None,
+    }
+}
+
 fn strip_title_heading_from_body(body: &str) -> &str {
     if let Some(remainder) = body.strip_prefix("# ") {
         if let Some(line_break) = remainder.find('\n') {
@@ -677,7 +801,10 @@ fn strip_title_heading_from_body(body: &str) -> &str {
 
 fn compose_note_body_with_title(title: &str, body: &str) -> String {
     let normalized_title = title.trim();
-    let normalized_body = body.replace("\r\n", "\n").trim_start_matches('\n').to_string();
+    let normalized_body = body
+        .replace("\r\n", "\n")
+        .trim_start_matches('\n')
+        .to_string();
 
     if normalized_body.is_empty() {
         format!("# {}", normalized_title)
@@ -716,7 +843,11 @@ fn is_external_link_target(target: &str) -> bool {
         || trimmed.starts_with('/')
 }
 
-fn rewrite_markdown_relative_paths(body: &str, old_directory: &Path, new_directory: &Path) -> String {
+fn rewrite_markdown_relative_paths(
+    body: &str,
+    old_directory: &Path,
+    new_directory: &Path,
+) -> String {
     let mut rewritten = String::with_capacity(body.len());
     let mut cursor = 0;
 
@@ -818,8 +949,8 @@ fn extract_tags(frontmatter: Option<&str>) -> Vec<String> {
 }
 
 fn extract_document_type(frontmatter: Option<&str>) -> String {
-    let value = frontmatter
-        .and_then(|frontmatter| extract_frontmatter_value(frontmatter, "documentType"));
+    let value =
+        frontmatter.and_then(|frontmatter| extract_frontmatter_value(frontmatter, "documentType"));
     normalize_document_type(value)
 }
 
@@ -897,8 +1028,12 @@ fn file_size_bytes(path: &Path) -> Option<u64> {
 }
 
 fn file_content_hash(path: &Path) -> Result<u64, String> {
-    let bytes = fs::read(path)
-        .map_err(|error| format!("Failed to read file {} for hashing: {error}", path.display()))?;
+    let bytes = fs::read(path).map_err(|error| {
+        format!(
+            "Failed to read file {} for hashing: {error}",
+            path.display()
+        )
+    })?;
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     bytes.hash(&mut hasher);
     Ok(hasher.finish())
@@ -1122,14 +1257,18 @@ fn parse_note_summary(path: &Path, notes_root: &Path) -> Result<NoteSummary, Str
         .map(|parent| parent.to_string_lossy().replace('\\', "/"))
         .filter(|parent| !parent.is_empty())
         .unwrap_or_else(|| "notes".to_string());
+    let document_type =
+        infer_document_type_from_relative_path(&relative_path, extract_document_type(frontmatter));
+    let notebook =
+        extract_notebook(frontmatter).or_else(|| infer_notebook_from_relative_path(&relative_path));
 
     Ok(NoteSummary {
         id: relative_path.clone(),
         title: derive_title(frontmatter, body, file_stem),
         relative_path,
         folder,
-        document_type: extract_document_type(frontmatter),
-        notebook: extract_notebook(frontmatter),
+        document_type,
+        notebook,
         summary: derive_summary(body),
         updated_at_ms: note_updated_at_ms(path),
         tags: extract_tags(frontmatter),
@@ -1382,16 +1521,24 @@ fn inspect_library_internal(root_path: &str) -> Result<LibraryOverviewResponse, 
     let layout = ensure_library_layout(root_path)?;
     let path = Path::new(&layout.root_path);
 
-    let entries = fs::read_dir(path)
-        .map_err(|error| format!("Failed to read knowledge base directory {}: {error}", layout.root_path))?;
+    let entries = fs::read_dir(path).map_err(|error| {
+        format!(
+            "Failed to read knowledge base directory {}: {error}",
+            layout.root_path
+        )
+    })?;
 
     let mut directory_count = 0;
     let mut file_count = 0;
     let mut sample_entries = Vec::new();
 
     for entry in entries {
-        let entry = entry
-            .map_err(|error| format!("Failed while iterating knowledge base directory {}: {error}", layout.root_path))?;
+        let entry = entry.map_err(|error| {
+            format!(
+                "Failed while iterating knowledge base directory {}: {error}",
+                layout.root_path
+            )
+        })?;
         let entry_type = entry.file_type().map_err(|error| {
             format!(
                 "Failed to inspect an entry in knowledge base directory {}: {error}",
@@ -1548,8 +1695,9 @@ fn connect_remote_library(config: &SyncConfigPayload) -> Result<RemoteConnection
         });
     }
 
-    probe_webdav_endpoint(config)
-        .ok_or_else(|| "Remote WebDAV endpoint did not confirm as reachable from the local app check.".to_string())?;
+    probe_webdav_endpoint(config).ok_or_else(|| {
+        "Remote WebDAV endpoint did not confirm as reachable from the local app check.".to_string()
+    })?;
     let mounted_path = try_mount_webdav(config)?;
     let remote_root_path = config.remote_root_path_for_mount_point(&mounted_path);
     let layout = ensure_library_layout(&remote_root_path)?;
@@ -1612,15 +1760,16 @@ fn build_sync_status_response(
     let snapshots_are_equal = snapshots_match(&local_snapshot, &remote_snapshot);
     let manifest = load_sync_manifest(local_root_path)?;
     let profile_key = sync_profile_key(config, &connection.remote_root_path);
-    let profile_manifest = manifest
-        .profiles
-        .get(&profile_key)
-        .cloned()
-        .unwrap_or(SyncProfileManifest {
-            last_direction: "push_local_to_remote".to_string(),
-            updated_at_ms: 0,
-            entries: HashMap::new(),
-        });
+    let profile_manifest =
+        manifest
+            .profiles
+            .get(&profile_key)
+            .cloned()
+            .unwrap_or(SyncProfileManifest {
+                last_direction: "push_local_to_remote".to_string(),
+                updated_at_ms: 0,
+                entries: HashMap::new(),
+            });
     let local_inventory = build_file_inventory(local_root_path)?;
     let remote_inventory = build_file_inventory(&connection.remote_root_path)?;
     let preview = preview_sync_operation(
@@ -1643,17 +1792,15 @@ fn build_sync_status_response(
     } else {
         suggested_sync_direction(&local_snapshot, &remote_snapshot)
     };
-    let status = status_override
-        .map(ToString::to_string)
-        .unwrap_or_else(|| {
-            if conflict_count > 0 {
-                "conflicted".to_string()
-            } else if snapshots_are_equal {
-                "synced".to_string()
-            } else {
-                "connected".to_string()
-            }
-        });
+    let status = status_override.map(ToString::to_string).unwrap_or_else(|| {
+        if conflict_count > 0 {
+            "conflicted".to_string()
+        } else if snapshots_are_equal {
+            "synced".to_string()
+        } else {
+            "connected".to_string()
+        }
+    });
     let message = message_override.unwrap_or_else(|| {
         if conflict_count > 0 {
             format!(
@@ -1694,11 +1841,20 @@ fn build_sync_status_response(
 
 fn copy_file(source: &Path, destination: &Path) -> Result<(), String> {
     if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("Failed to create parent directory {}: {error}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Failed to create parent directory {}: {error}",
+                parent.display()
+            )
+        })?;
     }
-    fs::copy(source, destination)
-        .map_err(|error| format!("Failed to copy file {} to {}: {error}", source.display(), destination.display()))?;
+    fs::copy(source, destination).map_err(|error| {
+        format!(
+            "Failed to copy file {} to {}: {error}",
+            source.display(),
+            destination.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -1721,14 +1877,15 @@ fn sync_library_contents(
         source_root
     };
     let profile_key = sync_profile_key(config, remote_root_path);
-    let profile_manifest = manifest
-        .profiles
-        .entry(profile_key)
-        .or_insert_with(|| SyncProfileManifest {
-            last_direction: direction.to_string(),
-            updated_at_ms: 0,
-            entries: HashMap::new(),
-        });
+    let profile_manifest =
+        manifest
+            .profiles
+            .entry(profile_key)
+            .or_insert_with(|| SyncProfileManifest {
+                last_direction: direction.to_string(),
+                updated_at_ms: 0,
+                entries: HashMap::new(),
+            });
     let preview = preview_sync_operation(
         &source_inventory,
         &destination_inventory,
@@ -1742,7 +1899,8 @@ fn sync_library_contents(
     };
 
     for source_entry in source_inventory.values() {
-        let destination_path = Path::new(&destination_layout.root_path).join(&source_entry.relative_path);
+        let destination_path =
+            Path::new(&destination_layout.root_path).join(&source_entry.relative_path);
         if preview.conflicts.contains(&source_entry.relative_path) {
             continue;
         }
@@ -1811,20 +1969,24 @@ fn create_note(
     let normalized_document_type = normalize_document_type(document_type);
     let notebook_value = notebook.and_then(|value| {
         let trimmed = value.trim().to_string();
-        if trimmed.is_empty() { None } else { Some(trimmed) }
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
     });
-    let target_folder = match normalized_document_type.as_str() {
-        "todo" => "todo",
-        "journal" => "journal",
-        _ => "note",
-    };
-    let target_notebook_directory = Path::new(&layout.notes_root).join(target_folder);
+    let target_relative_directory =
+        note_container_relative_directory(&normalized_document_type, notebook_value.as_deref());
+    let target_notebook_directory = Path::new(&layout.notes_root).join(&target_relative_directory);
     fs::create_dir_all(&target_notebook_directory).map_err(|error| {
         format!(
             "Failed to prepare notebook directory {}: {error}",
             target_notebook_directory.display()
         )
     })?;
+    let target_folder = target_relative_directory
+        .to_string_lossy()
+        .replace('\\', "/");
     let relative_path = format!("{}/{}-{}.md", target_folder, slug, timestamp_ms);
     let note_path = Path::new(&layout.notes_root).join(&relative_path);
 
@@ -1839,8 +2001,12 @@ fn create_note(
         Some(Vec::new()),
     );
 
-    fs::write(&note_path, content)
-        .map_err(|error| format!("Failed to create note file {}: {error}", note_path.display()))?;
+    fs::write(&note_path, content).map_err(|error| {
+        format!(
+            "Failed to create note file {}: {error}",
+            note_path.display()
+        )
+    })?;
 
     let note = parse_note_summary(&note_path, Path::new(&layout.notes_root))?;
     let created_relative_path = note.relative_path.clone();
@@ -1898,8 +2064,12 @@ fn save_note_document(
     fs::write(&note_path, &next_content)
         .map_err(|error| format!("Failed to save note file {}: {error}", note_path.display()))?;
 
-    let raw_content = fs::read_to_string(&note_path)
-        .map_err(|error| format!("Failed to re-read note file {}: {error}", note_path.display()))?;
+    let raw_content = fs::read_to_string(&note_path).map_err(|error| {
+        format!(
+            "Failed to re-read note file {}: {error}",
+            note_path.display()
+        )
+    })?;
     let (frontmatter, body) = parse_frontmatter_block(&raw_content);
     let note = parse_note_summary(&note_path, notes_root)?;
     let saved_relative_path = note.relative_path.clone();
@@ -1943,9 +2113,12 @@ fn rename_note(
         None,
     );
 
-    let current_directory = note_path
-        .parent()
-        .ok_or_else(|| format!("Failed to resolve a parent directory for {}.", note_path.display()))?;
+    let current_directory = note_path.parent().ok_or_else(|| {
+        format!(
+            "Failed to resolve a parent directory for {}.",
+            note_path.display()
+        )
+    })?;
     let current_extension = note_path
         .extension()
         .and_then(|value| value.to_str())
@@ -1958,11 +2131,19 @@ fn rename_note(
         ensure_unique_file_path(candidate_path)
     };
 
-    fs::write(&next_note_path, &next_content)
-        .map_err(|error| format!("Failed to save note file {}: {error}", next_note_path.display()))?;
+    fs::write(&next_note_path, &next_content).map_err(|error| {
+        format!(
+            "Failed to save note file {}: {error}",
+            next_note_path.display()
+        )
+    })?;
     if next_note_path != note_path {
-        fs::remove_file(&note_path)
-            .map_err(|error| format!("Failed to remove the original note file {}: {error}", note_path.display()))?;
+        fs::remove_file(&note_path).map_err(|error| {
+            format!(
+                "Failed to remove the original note file {}: {error}",
+                note_path.display()
+            )
+        })?;
     }
 
     let next_note_id = next_note_path
@@ -1980,7 +2161,10 @@ fn rename_note(
 }
 
 #[tauri::command]
-fn delete_note(root_path: String, payload: DeleteNotePayload) -> Result<DefaultLocalLibraryResponse, String> {
+fn delete_note(
+    root_path: String,
+    payload: DeleteNotePayload,
+) -> Result<DefaultLocalLibraryResponse, String> {
     let layout = ensure_library_layout(&root_path)?;
     let notes_root = Path::new(&layout.notes_root);
     let note_path = resolve_note_path(notes_root, &payload.note_id)?;
@@ -1988,8 +2172,12 @@ fn delete_note(root_path: String, payload: DeleteNotePayload) -> Result<DefaultL
         return Err(format!("The note does not exist: {}", note_path.display()));
     }
 
-    fs::remove_file(&note_path)
-        .map_err(|error| format!("Failed to delete note file {}: {error}", note_path.display()))?;
+    fs::remove_file(&note_path).map_err(|error| {
+        format!(
+            "Failed to delete note file {}: {error}",
+            note_path.display()
+        )
+    })?;
 
     Ok(DefaultLocalLibraryResponse {
         root_path,
@@ -2047,19 +2235,29 @@ fn move_note_to_notebook(
         .and_then(|stem| stem.to_str())
         .unwrap_or("Untitled note");
     let timestamp_ms = current_timestamp_ms()?;
-    let next_notebook = payload
-        .notebook
-        .and_then(|value| {
-            let trimmed = value.trim().to_string();
-            if trimmed.is_empty() { None } else { Some(trimmed) }
-        });
-    let current_directory = note_path
-        .parent()
-        .ok_or_else(|| format!("Failed to resolve a parent directory for {}.", note_path.display()))?;
-    let target_relative_directory = note_container_relative_directory(&current_document_type, next_notebook.as_deref());
+    let next_notebook = payload.notebook.and_then(|value| {
+        let trimmed = value.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
+    let current_directory = note_path.parent().ok_or_else(|| {
+        format!(
+            "Failed to resolve a parent directory for {}.",
+            note_path.display()
+        )
+    })?;
+    let target_relative_directory =
+        note_container_relative_directory(&current_document_type, next_notebook.as_deref());
     let target_directory = notes_root.join(&target_relative_directory);
-    fs::create_dir_all(&target_directory)
-        .map_err(|error| format!("Failed to prepare target notebook directory {}: {error}", target_directory.display()))?;
+    fs::create_dir_all(&target_directory).map_err(|error| {
+        format!(
+            "Failed to prepare target notebook directory {}: {error}",
+            target_directory.display()
+        )
+    })?;
     let file_name = note_path
         .file_name()
         .ok_or_else(|| format!("Failed to resolve a file name for {}.", note_path.display()))?;
@@ -2079,11 +2277,19 @@ fn move_note_to_notebook(
         Some(next_notebook.clone()),
         None,
     );
-    fs::write(&next_note_path, &next_content)
-        .map_err(|error| format!("Failed to save note file {}: {error}", next_note_path.display()))?;
+    fs::write(&next_note_path, &next_content).map_err(|error| {
+        format!(
+            "Failed to save note file {}: {error}",
+            next_note_path.display()
+        )
+    })?;
     if next_note_path != note_path {
-        fs::remove_file(&note_path)
-            .map_err(|error| format!("Failed to remove the original note file {}: {error}", note_path.display()))?;
+        fs::remove_file(&note_path).map_err(|error| {
+            format!(
+                "Failed to remove the original note file {}: {error}",
+                note_path.display()
+            )
+        })?;
     }
 
     let next_note_id = next_note_path
@@ -2121,8 +2327,12 @@ fn rename_notebook(
 
     let layout = ensure_library_layout(&root_path)?;
     let notes_root = Path::new(&layout.notes_root);
-    let current_directory = notes_root.join("notebooks").join(sanitize_path_component(current_name));
-    let next_directory = notes_root.join("notebooks").join(sanitize_path_component(next_name));
+    let current_directory = notes_root
+        .join("notebooks")
+        .join(sanitize_path_component(current_name));
+    let next_directory = notes_root
+        .join("notebooks")
+        .join(sanitize_path_component(next_name));
 
     if !current_directory.exists() {
         return Err(format!("Notebook {} does not exist.", current_name));
@@ -2131,8 +2341,12 @@ fn rename_notebook(
         return Err(format!("Notebook {} already exists.", next_name));
     }
 
-    fs::create_dir_all(&next_directory)
-        .map_err(|error| format!("Failed to prepare notebook directory {}: {error}", next_directory.display()))?;
+    fs::create_dir_all(&next_directory).map_err(|error| {
+        format!(
+            "Failed to prepare notebook directory {}: {error}",
+            next_directory.display()
+        )
+    })?;
 
     let mut markdown_files = Vec::new();
     collect_markdown_files(&current_directory, &mut markdown_files)?;
@@ -2140,8 +2354,9 @@ fn rename_notebook(
     let mut renamed_note_ids = HashMap::new();
 
     for note_path in markdown_files {
-        let existing_raw_content = fs::read_to_string(&note_path)
-            .map_err(|error| format!("Failed to read note file {}: {error}", note_path.display()))?;
+        let existing_raw_content = fs::read_to_string(&note_path).map_err(|error| {
+            format!("Failed to read note file {}: {error}", note_path.display())
+        })?;
         let (existing_frontmatter, existing_body) = parse_frontmatter_block(&existing_raw_content);
         let fallback_title = note_path
             .file_stem()
@@ -2150,14 +2365,20 @@ fn rename_notebook(
         let timestamp_ms = current_timestamp_ms()?;
         let current_note_id = note_path
             .strip_prefix(notes_root)
-            .map_err(|error| format!("Failed to resolve note id for {}: {error}", note_path.display()))?
+            .map_err(|error| {
+                format!(
+                    "Failed to resolve note id for {}: {error}",
+                    note_path.display()
+                )
+            })?
             .to_string_lossy()
             .replace('\\', "/");
         let file_name = note_path
             .file_name()
             .ok_or_else(|| format!("Failed to resolve a file name for {}.", note_path.display()))?;
         let next_note_path = next_directory.join(file_name);
-        let rewritten_body = rewrite_markdown_relative_paths(existing_body, &current_directory, &next_directory);
+        let rewritten_body =
+            rewrite_markdown_relative_paths(existing_body, &current_directory, &next_directory);
         let next_content = build_note_content_with_metadata(
             existing_frontmatter,
             &rewritten_body,
@@ -2169,22 +2390,39 @@ fn rename_notebook(
             None,
         );
 
-        fs::write(&next_note_path, &next_content)
-            .map_err(|error| format!("Failed to save note file {}: {error}", next_note_path.display()))?;
-        fs::remove_file(&note_path)
-            .map_err(|error| format!("Failed to remove the original note file {}: {error}", note_path.display()))?;
+        fs::write(&next_note_path, &next_content).map_err(|error| {
+            format!(
+                "Failed to save note file {}: {error}",
+                next_note_path.display()
+            )
+        })?;
+        fs::remove_file(&note_path).map_err(|error| {
+            format!(
+                "Failed to remove the original note file {}: {error}",
+                note_path.display()
+            )
+        })?;
 
         let next_note_id = next_note_path
             .strip_prefix(notes_root)
-            .map_err(|error| format!("Failed to resolve note id for {}: {error}", next_note_path.display()))?
+            .map_err(|error| {
+                format!(
+                    "Failed to resolve note id for {}: {error}",
+                    next_note_path.display()
+                )
+            })?
             .to_string_lossy()
             .replace('\\', "/");
         affected_note_ids.push(next_note_id.clone());
         renamed_note_ids.insert(current_note_id, next_note_id);
     }
 
-    fs::remove_dir_all(&current_directory)
-        .map_err(|error| format!("Failed to remove the old notebook directory {}: {error}", current_directory.display()))?;
+    fs::remove_dir_all(&current_directory).map_err(|error| {
+        format!(
+            "Failed to remove the old notebook directory {}: {error}",
+            current_directory.display()
+        )
+    })?;
 
     Ok(NotebookMutationResponse {
         message: format!("Renamed notebook {} to {}.", current_name, next_name),
@@ -2206,7 +2444,9 @@ fn delete_notebook(
 
     let layout = ensure_library_layout(&root_path)?;
     let notes_root = Path::new(&layout.notes_root);
-    let notebook_directory = notes_root.join("notebooks").join(sanitize_path_component(notebook_name));
+    let notebook_directory = notes_root
+        .join("notebooks")
+        .join(sanitize_path_component(notebook_name));
     if !notebook_directory.exists() {
         return Err(format!("Notebook {} does not exist.", notebook_name));
     }
@@ -2222,8 +2462,12 @@ fn delete_notebook(
         })
         .collect::<Vec<_>>();
 
-    fs::remove_dir_all(&notebook_directory)
-        .map_err(|error| format!("Failed to delete notebook {}: {error}", notebook_directory.display()))?;
+    fs::remove_dir_all(&notebook_directory).map_err(|error| {
+        format!(
+            "Failed to delete notebook {}: {error}",
+            notebook_directory.display()
+        )
+    })?;
 
     Ok(NotebookMutationResponse {
         message: format!("Deleted notebook {} and its contents.", notebook_name),
@@ -2234,13 +2478,19 @@ fn delete_notebook(
 }
 
 #[tauri::command]
-fn import_asset(root_path: String, payload: ImportAssetPayload) -> Result<ImportAssetResponse, String> {
+fn import_asset(
+    root_path: String,
+    payload: ImportAssetPayload,
+) -> Result<ImportAssetResponse, String> {
     let layout = ensure_library_layout(&root_path)?;
     let notes_root = Path::new(&layout.notes_root);
     let note_path = resolve_note_path(notes_root, &payload.note_id)?;
-    let note_directory = note_path
-        .parent()
-        .ok_or_else(|| format!("Failed to resolve a parent directory for {}.", note_path.display()))?;
+    let note_directory = note_path.parent().ok_or_else(|| {
+        format!(
+            "Failed to resolve a parent directory for {}.",
+            note_path.display()
+        )
+    })?;
     let timestamp_ms = current_timestamp_ms()?;
     let asset_file_name = sanitize_import_filename(&payload.file_name, timestamp_ms);
     let target_directory = if payload.kind.trim().eq_ignore_ascii_case("image") {
@@ -2251,10 +2501,19 @@ fn import_asset(root_path: String, payload: ImportAssetPayload) -> Result<Import
     let asset_path = target_directory.join(&asset_file_name);
     let asset_bytes = BASE64_STANDARD
         .decode(&payload.base64_data)
-        .map_err(|error| format!("Failed to decode asset payload for {}: {error}", payload.file_name))?;
+        .map_err(|error| {
+            format!(
+                "Failed to decode asset payload for {}: {error}",
+                payload.file_name
+            )
+        })?;
 
-    fs::write(&asset_path, asset_bytes)
-        .map_err(|error| format!("Failed to write asset file {}: {error}", asset_path.display()))?;
+    fs::write(&asset_path, asset_bytes).map_err(|error| {
+        format!(
+            "Failed to write asset file {}: {error}",
+            asset_path.display()
+        )
+    })?;
 
     let relative_asset_path = asset_path
         .strip_prefix(Path::new(&layout.root_path))
@@ -2273,7 +2532,10 @@ fn import_asset(root_path: String, payload: ImportAssetPayload) -> Result<Import
     Ok(ImportAssetResponse {
         relative_asset_path: relative_asset_path.clone(),
         markdown_snippet,
-        message: format!("Imported {} into {}.", payload.file_name, relative_asset_path),
+        message: format!(
+            "Imported {} into {}.",
+            payload.file_name, relative_asset_path
+        ),
     })
 }
 
@@ -2287,7 +2549,12 @@ fn inspect_note_connections(
         .iter()
         .find(|note| note.summary.id == note_id)
         .cloned()
-        .ok_or_else(|| format!("Failed to find note {} in the local knowledge base.", note_id))?;
+        .ok_or_else(|| {
+            format!(
+                "Failed to find note {} in the local knowledge base.",
+                note_id
+            )
+        })?;
 
     let mut note_index = HashMap::<String, NoteLinkReference>::new();
     for note in &parsed_notes {
@@ -2313,10 +2580,16 @@ fn inspect_note_connections(
         }
 
         if let Some(reference) = note_index.get(&canonical) {
-            if seen_outgoing.insert(reference.note_id.clone(), true).is_none() {
+            if seen_outgoing
+                .insert(reference.note_id.clone(), true)
+                .is_none()
+            {
                 outgoing_links.push(reference.clone());
             }
-        } else if seen_outgoing.insert(format!("unresolved:{canonical}"), true).is_none() {
+        } else if seen_outgoing
+            .insert(format!("unresolved:{canonical}"), true)
+            .is_none()
+        {
             unresolved_links.push(raw_link);
         }
     }
@@ -2325,14 +2598,21 @@ fn inspect_note_connections(
     let mut backlinks = Vec::new();
     let mut seen_backlinks = HashMap::<String, bool>::new();
 
-    for note in parsed_notes.iter().filter(|note| note.summary.id != selected_note.summary.id) {
+    for note in parsed_notes
+        .iter()
+        .filter(|note| note.summary.id != selected_note.summary.id)
+    {
         let links = extract_wikilinks(&note.body);
         let points_to_selected = links.iter().any(|raw_link| {
             let canonical = canonicalize_link_target(raw_link);
             selected_keys.iter().any(|key| key == &canonical)
         });
 
-        if points_to_selected && seen_backlinks.insert(note.summary.id.clone(), true).is_none() {
+        if points_to_selected
+            && seen_backlinks
+                .insert(note.summary.id.clone(), true)
+                .is_none()
+        {
             backlinks.push(NoteLinkReference {
                 title: note.summary.title.clone(),
                 note_id: note.summary.id.clone(),
@@ -2424,7 +2704,10 @@ fn list_library_assets(root_path: String) -> Result<Vec<MediaAssetRecord>, Strin
 fn open_local_path(path: String) -> Result<OpenPathResponse, String> {
     let target_path = PathBuf::from(&path);
     if !target_path.exists() {
-        return Err(format!("The local path does not exist: {}", target_path.display()));
+        return Err(format!(
+            "The local path does not exist: {}",
+            target_path.display()
+        ));
     }
 
     let status = Command::new("open")
@@ -2445,7 +2728,10 @@ fn open_local_path(path: String) -> Result<OpenPathResponse, String> {
 fn reveal_local_path(path: String) -> Result<OpenPathResponse, String> {
     let target_path = PathBuf::from(&path);
     if !target_path.exists() {
-        return Err(format!("The local path does not exist: {}", target_path.display()));
+        return Err(format!(
+            "The local path does not exist: {}",
+            target_path.display()
+        ));
     }
 
     let status = Command::new("open")
@@ -2454,7 +2740,10 @@ fn reveal_local_path(path: String) -> Result<OpenPathResponse, String> {
         .status()
         .map_err(|error| format!("Failed to reveal {}: {error}", target_path.display()))?;
     if !status.success() {
-        return Err(format!("macOS could not reveal {} in Finder.", target_path.display()));
+        return Err(format!(
+            "macOS could not reveal {} in Finder.",
+            target_path.display()
+        ));
     }
 
     Ok(OpenPathResponse {
@@ -2464,7 +2753,10 @@ fn reveal_local_path(path: String) -> Result<OpenPathResponse, String> {
 }
 
 #[tauri::command]
-fn prepare_sync(local_root_path: String, config: SyncConfigPayload) -> Result<SyncStatusResponse, String> {
+fn prepare_sync(
+    local_root_path: String,
+    config: SyncConfigPayload,
+) -> Result<SyncStatusResponse, String> {
     ensure_library_layout(&local_root_path)?;
 
     let connection = match connect_remote_library(&config) {
@@ -2505,7 +2797,8 @@ fn prepare_sync(local_root_path: String, config: SyncConfigPayload) -> Result<Sy
     } else if requires_initial_decision {
         "Local offline library and remote sync target both contain content. Choose whether to pull the remote library down or push the local library up.".to_string()
     } else if suggested_direction == "pull_remote_to_local" {
-        "Remote sync target contains content that can be pulled into the local offline library.".to_string()
+        "Remote sync target contains content that can be pulled into the local offline library."
+            .to_string()
     } else {
         "Local offline library is ready to push into the remote sync target.".to_string()
     };
@@ -2583,7 +2876,9 @@ fn sync_libraries(payload: SyncLibrariesPayload) -> Result<SyncStatusResponse, S
 }
 
 #[tauri::command]
-fn resolve_sync_conflict(payload: ResolveSyncConflictPayload) -> Result<SyncStatusResponse, String> {
+fn resolve_sync_conflict(
+    payload: ResolveSyncConflictPayload,
+) -> Result<SyncStatusResponse, String> {
     ensure_library_layout(&payload.local_root_path)?;
     let connection = match connect_remote_library(&payload.config) {
         Ok(connection) => connection,
@@ -2594,14 +2889,15 @@ fn resolve_sync_conflict(payload: ResolveSyncConflictPayload) -> Result<SyncStat
     let timestamp_ms = current_timestamp_ms()?;
     let profile_key = sync_profile_key(&payload.config, &connection.remote_root_path);
     let mut manifest = load_sync_manifest(&payload.local_root_path)?;
-    let profile_manifest = manifest
-        .profiles
-        .entry(profile_key)
-        .or_insert_with(|| SyncProfileManifest {
-            last_direction: "push_local_to_remote".to_string(),
-            updated_at_ms: 0,
-            entries: HashMap::new(),
-        });
+    let profile_manifest =
+        manifest
+            .profiles
+            .entry(profile_key)
+            .or_insert_with(|| SyncProfileManifest {
+                last_direction: "push_local_to_remote".to_string(),
+                updated_at_ms: 0,
+                entries: HashMap::new(),
+            });
 
     let (source_inventory, destination_root, direction) = match payload.resolution.as_str() {
         "keep_local" => (
@@ -2621,12 +2917,14 @@ fn resolve_sync_conflict(payload: ResolveSyncConflictPayload) -> Result<SyncStat
         }
     };
 
-    let source_entry = source_inventory.get(&payload.relative_path).ok_or_else(|| {
-        format!(
-            "Conflict source file {} is not available for resolution.",
-            payload.relative_path
-        )
-    })?;
+    let source_entry = source_inventory
+        .get(&payload.relative_path)
+        .ok_or_else(|| {
+            format!(
+                "Conflict source file {} is not available for resolution.",
+                payload.relative_path
+            )
+        })?;
     let destination_path = Path::new(destination_root).join(&payload.relative_path);
     copy_file(&source_entry.absolute_path, &destination_path)?;
     upsert_manifest_entry(

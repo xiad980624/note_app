@@ -155,6 +155,17 @@ type ActiveDirectorySelection =
   | { kind: 'type'; value: DocumentType }
   | { kind: 'notebook'; value: string }
 
+type NotePointerDragState = {
+  noteId: string
+  title: string
+  originNotebook: string | null
+  startX: number
+  startY: number
+  x: number
+  y: number
+  hasMoved: boolean
+}
+
 type LibrarySnapshot = {
   rootPath: string
   noteCount: number
@@ -1131,6 +1142,7 @@ function App() {
   const [creatingNotebook, setCreatingNotebook] = useState(false)
   const [newNotebookName, setNewNotebookName] = useState('')
   const [dragTargetNotebook, setDragTargetNotebook] = useState<string | null>(null)
+  const [notePointerDrag, setNotePointerDrag] = useState<NotePointerDragState | null>(null)
   const [noteConnections, setNoteConnections] = useState<NoteConnections>({
     outgoingLinks: [],
     backlinks: [],
@@ -1151,7 +1163,9 @@ function App() {
   const commandPaletteInputRef = useRef<HTMLInputElement | null>(null)
   const commandPaletteItemsRef = useRef<CommandPaletteItem[]>([])
   const pendingSelectionRef = useRef<{ start: number; end: number }>({ start: 0, end: 0 })
-  const draggedNoteIdRef = useRef<string | null>(null)
+  const notePointerDragRef = useRef<NotePointerDragState | null>(null)
+  const suppressNextNoteClickRef = useRef(false)
+  const notebookDropTargetsRef = useRef<Map<string, HTMLElement>>(new Map())
   const notesByType = useMemo(() => {
     const groups: Record<DocumentType, RealNoteSummary[]> = {
       todo: [],
@@ -2309,6 +2323,15 @@ function App() {
     setSelectedNoteId(noteId)
   }, [hasUnsavedChanges, selectedNoteId])
 
+  const handleDirectoryNoteClick = useCallback((noteId: string) => {
+    if (suppressNextNoteClickRef.current) {
+      suppressNextNoteClickRef.current = false
+      return
+    }
+
+    handleSelectNote(noteId)
+  }, [handleSelectNote])
+
   const handleCreateNote = useCallback(async (documentType: DocumentType = 'note') => {
     if (
       hasUnsavedChanges &&
@@ -2484,39 +2507,52 @@ function App() {
     setCreatingNotebook(true)
   }, [])
 
-  const handleNoteDragStart = useCallback(
-    (event: React.DragEvent<HTMLElement>, noteId: string) => {
-      event.dataTransfer.effectAllowed = 'move'
-      event.dataTransfer.setData('application/x-notebase-note', noteId)
-      event.dataTransfer.setData('text/plain', noteId)
-      draggedNoteIdRef.current = noteId
+  const registerNotebookDropTarget = useCallback(
+    (notebookName: string) => (node: HTMLDivElement | null) => {
+      if (node) {
+        notebookDropTargetsRef.current.set(notebookName, node)
+        return
+      }
+
+      notebookDropTargetsRef.current.delete(notebookName)
     },
     [],
   )
 
-  const handleNoteDragEnd = useCallback(() => {
-    draggedNoteIdRef.current = null
-    setDragTargetNotebook(null)
+  const resolveNotebookDropTarget = useCallback((x: number, y: number) => {
+    for (const [notebookName, element] of notebookDropTargetsRef.current.entries()) {
+      const rect = element.getBoundingClientRect()
+      if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+        return notebookName
+      }
+    }
+
+    return null
+  }, [])
+
+  const handleNotePointerDown = useCallback((event: React.PointerEvent<HTMLElement>, note: RealNoteSummary) => {
+    if (event.button !== 0) {
+      return
+    }
+
+    const nextDrag: NotePointerDragState = {
+      noteId: note.id,
+      title: note.title,
+      originNotebook: note.notebook,
+      startX: event.clientX,
+      startY: event.clientY,
+      x: event.clientX,
+      y: event.clientY,
+      hasMoved: false,
+    }
+
+    notePointerDragRef.current = nextDrag
+    setNotePointerDrag(nextDrag)
   }, [])
 
   const handleNotebookCreatorSubmit = useCallback(() => {
     void handleCreateNotebook(newNotebookName)
   }, [handleCreateNotebook, newNotebookName])
-
-  const resolveDraggedNoteId = useCallback((event: React.DragEvent<HTMLElement>) => {
-    const internalId = draggedNoteIdRef.current
-    if (internalId) {
-      return internalId
-    }
-
-    const customTransferId = event.dataTransfer.getData('application/x-notebase-note')
-    if (customTransferId) {
-      return customTransferId
-    }
-
-    const plainTransferId = event.dataTransfer.getData('text/plain')
-    return plainTransferId || null
-  }, [])
 
   const toggleSection = useCallback((section: LibrarySectionKey) => {
     setExpandedSections((current) => ({
@@ -2546,7 +2582,8 @@ function App() {
       })
       await refreshLocalWorkspace(localRootPath)
       closeNoteMenu()
-      draggedNoteIdRef.current = null
+      notePointerDragRef.current = null
+      setNotePointerDrag(null)
       setDragTargetNotebook(null)
       if (notebook) {
         setExpandedSections((current) => ({ ...current, notebooks: true }))
@@ -2563,6 +2600,75 @@ function App() {
       setSaveMessage(error instanceof Error ? error.message : 'Failed to update the selected notebook.')
     }
   }, [closeNoteMenu, knowledgeBaseIndex.notes, localRootPath, refreshLocalWorkspace, runningInTauri])
+
+  useEffect(() => {
+    const handlePointerMove = (event: PointerEvent) => {
+      const currentDrag = notePointerDragRef.current
+      if (!currentDrag) {
+        return
+      }
+
+      const distanceX = Math.abs(event.clientX - currentDrag.startX)
+      const distanceY = Math.abs(event.clientY - currentDrag.startY)
+      const hasMoved = currentDrag.hasMoved || distanceX > 5 || distanceY > 5
+      const nextDrag = {
+        ...currentDrag,
+        x: event.clientX,
+        y: event.clientY,
+        hasMoved,
+      }
+
+      notePointerDragRef.current = nextDrag
+      setNotePointerDrag(nextDrag)
+
+      if (hasMoved) {
+        event.preventDefault()
+        setDragTargetNotebook(resolveNotebookDropTarget(event.clientX, event.clientY))
+      }
+    }
+
+    const handlePointerUp = (event: PointerEvent) => {
+      const currentDrag = notePointerDragRef.current
+      if (!currentDrag) {
+        return
+      }
+
+      const targetNotebook = currentDrag.hasMoved
+        ? resolveNotebookDropTarget(event.clientX, event.clientY)
+        : null
+      const shouldMove = Boolean(targetNotebook && targetNotebook !== currentDrag.originNotebook)
+
+      if (currentDrag.hasMoved) {
+        event.preventDefault()
+        suppressNextNoteClickRef.current = true
+      }
+
+      notePointerDragRef.current = null
+      setNotePointerDrag(null)
+      setDragTargetNotebook(null)
+
+      if (shouldMove && targetNotebook) {
+        void handleMoveNoteToNotebook(currentDrag.noteId, targetNotebook)
+      }
+    }
+
+    const cancelPointerDrag = () => {
+      notePointerDragRef.current = null
+      setNotePointerDrag(null)
+      setDragTargetNotebook(null)
+    }
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', handlePointerUp)
+    window.addEventListener('pointercancel', cancelPointerDrag)
+    window.addEventListener('blur', cancelPointerDrag)
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+      window.removeEventListener('pointercancel', cancelPointerDrag)
+      window.removeEventListener('blur', cancelPointerDrag)
+    }
+  }, [handleMoveNoteToNotebook, resolveNotebookDropTarget])
 
   const handleRenameNote = useCallback(async () => {
     if (!noteMenuState || !runningInTauri) {
@@ -3117,10 +3223,8 @@ function App() {
                                   key={note.id}
                                   type="button"
                                   className={`directory-entry ${selectedNote?.id === note.id ? 'directory-entry-active' : ''}`}
-                                  onClick={() => handleSelectNote(note.id)}
-                                  draggable
-                                  onDragStart={(event) => handleNoteDragStart(event, note.id)}
-                                  onDragEnd={handleNoteDragEnd}
+                                  onClick={() => handleDirectoryNoteClick(note.id)}
+                                  onPointerDown={(event) => handleNotePointerDown(event, note)}
                                   onContextMenu={(event) => {
                                     event.preventDefault()
                                     closeNotebookMenu()
@@ -3194,43 +3298,10 @@ function App() {
                           notebookList.map((notebook) => (
                             <div
                               key={notebook.name}
+                              ref={registerNotebookDropTarget(notebook.name)}
                               className={`directory-notebook-block ${
                                 dragTargetNotebook === notebook.name ? 'directory-entry-drop-target' : ''
                               }`}
-                              onDragEnter={(event) => {
-                                const currentDraggedNoteId = resolveDraggedNoteId(event)
-                                if (!currentDraggedNoteId) {
-                                  return
-                                }
-                                event.preventDefault()
-                                setDragTargetNotebook(notebook.name)
-                              }}
-                              onDragOver={(event) => {
-                                const currentDraggedNoteId = resolveDraggedNoteId(event)
-                                if (!currentDraggedNoteId) {
-                                  return
-                                }
-                                event.preventDefault()
-                                event.dataTransfer.dropEffect = 'move'
-                                setDragTargetNotebook(notebook.name)
-                              }}
-                              onDragLeave={(event) => {
-                                if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
-                                  return
-                                }
-                                if (dragTargetNotebook === notebook.name) {
-                                  setDragTargetNotebook(null)
-                                }
-                              }}
-                              onDrop={(event) => {
-                                const currentDraggedNoteId = resolveDraggedNoteId(event)
-                                if (!currentDraggedNoteId) {
-                                  return
-                                }
-                                event.preventDefault()
-                                event.stopPropagation()
-                                void handleMoveNoteToNotebook(currentDraggedNoteId, notebook.name)
-                              }}
                             >
                               <button
                                 type="button"
@@ -3268,10 +3339,8 @@ function App() {
                                       className={`directory-entry directory-entry-leaf ${
                                         selectedNote?.id === note.id ? 'directory-entry-active' : ''
                                       }`}
-                                      onClick={() => handleSelectNote(note.id)}
-                                      draggable
-                                      onDragStart={(event) => handleNoteDragStart(event, note.id)}
-                                      onDragEnd={handleNoteDragEnd}
+                                      onClick={() => handleDirectoryNoteClick(note.id)}
+                                      onPointerDown={(event) => handleNotePointerDown(event, note)}
                                       onContextMenu={(event) => {
                                         event.preventDefault()
                                         closeNotebookMenu()
@@ -3961,6 +4030,17 @@ function App() {
           )}
         </section>
       </div>
+
+      {notePointerDrag?.hasMoved ? (
+        <div
+          className="note-drag-ghost"
+          style={{
+            transform: `translate3d(${notePointerDrag.x + 10}px, ${notePointerDrag.y + 10}px, 0)`,
+          }}
+        >
+          {notePointerDrag.title}
+        </div>
+      ) : null}
 
       {commandPaletteOpen ? (
         <div className="modal-shell" role="presentation" onClick={closeCommandPalette}>

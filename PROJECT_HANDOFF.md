@@ -136,12 +136,13 @@ Rules:
 - assigned documents move into `notes/notebooks/<Notebook Name>/`
 - moving a note must preserve its relative asset links
 
-Current important caveat:
-- older test libraries may still contain legacy directories such as:
-  - `inbox/`
-  - `projects/`
-  - `topics/`
-- current codebase is being moved toward the new structure, but old local libraries may still need explicit migration work
+Legacy compatibility:
+- older test libraries may still contain legacy directories such as `inbox/`, `projects/`, and `topics/`
+- the Tauri backend now migrates markdown files during library load:
+  - `inbox/` -> `notes/note/`
+  - `projects/` -> `notes/notebooks/Projects/`
+  - `topics/` -> `notes/notebooks/Topics/`
+- migration also rewrites relative markdown links when a document moves folders
 
 ## 6. Implemented capabilities
 
@@ -161,6 +162,7 @@ Implemented and working at a meaningful first pass:
 - sync entry and first-pass sync workflow
 - notebook creation
 - notebook assignment UI
+- pointer-based notebook drag and drop with target highlighting
 
 ## 7. Important current behavior
 
@@ -184,19 +186,17 @@ Implemented and working at a meaningful first pass:
 
 These are the most important known issues right now:
 
-1. Notebook drag and drop is still unreliable
-2. Legacy libraries may still keep notes in old directories
-3. Notebook movement needs migration-safe handling for older paths
-4. The notebook context menu has improved, but still needs polish
-5. Graph and Media views exist, but are not the current priority
+1. Drag-and-drop still needs real-device UX verification in the Tauri window
+2. Legacy migration needs a visible confirmation/log surface before beta
+3. The notebook context menu has improved, but still needs polish
+4. Graph and Media views exist, but are not the current priority
 
 ## 9. Recommended next work
 
 Near-term:
-1. finish notebook movement semantics end to end
-2. add a migration path for `inbox / projects / topics`
-3. make drag-and-drop notebook assignment reliable
-4. continue polishing writing UX on top of the title + body model
+1. verify notebook drag-and-drop in the running desktop app
+2. add a user-visible migration summary for old libraries
+3. continue polishing writing UX on top of the title + body model
 
 Later:
 1. strengthen search
