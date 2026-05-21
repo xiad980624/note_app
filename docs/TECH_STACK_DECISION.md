@@ -105,6 +105,7 @@ KnowledgeBase/
 - `assets/images/` 与 `assets/files/` 分别保存图片和附件。
 - `.notebase/index.db` 保存搜索索引、关系索引和缓存信息。
 - 用户真实数据以文件为准，数据库可重建。
+- P1 基础搜索直接读取 Markdown 文件并在 Tauri 后端打分返回；后续数据量变大后再落入 `.notebase/index.db` 或专用全文索引。
 - 文档移动到 notebook 时，需要同步维护正文中的相对附件路径。
 - 历史测试库可能仍存在 `inbox / projects / topics` 等旧目录；当前 Tauri 后端在加载知识库时迁移其中的 markdown 文件：
   - `inbox` 迁移为未归档 `notes/note/`

@@ -188,6 +188,25 @@ struct DeleteNotebookPayload {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SearchLibraryPayload {
+    query: String,
+    document_type: Option<String>,
+    notebook: Option<String>,
+    tag: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SearchLibraryResult {
+    note: NoteSummary,
+    snippet: String,
+    match_kind: String,
+    score: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ImportAssetPayload {
     note_id: String,
     file_name: String,
@@ -1084,6 +1103,42 @@ fn derive_summary(body: &str) -> String {
     }
 
     "No preview text yet.".to_string()
+}
+
+fn search_snippet(body: &str, query: &str) -> String {
+    let compact = body
+        .replace('\n', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if compact.is_empty() {
+        return "No body text yet.".to_string();
+    }
+
+    if query.is_empty() {
+        return compact.chars().take(150).collect();
+    }
+
+    let lowercase = compact.to_lowercase();
+    let Some(byte_index) = lowercase.find(query) else {
+        return compact.chars().take(150).collect();
+    };
+
+    let start = lowercase[..byte_index].chars().count().saturating_sub(56);
+    let end = start + 150;
+    let mut snippet = compact
+        .chars()
+        .skip(start)
+        .take(end - start)
+        .collect::<String>();
+    if start > 0 {
+        snippet = format!("...{snippet}");
+    }
+    if compact.chars().count() > end {
+        snippet.push_str("...");
+    }
+    snippet
 }
 
 fn asset_kind_from_path(path: &Path) -> String {
@@ -2074,6 +2129,120 @@ fn inspect_library(root_path: String) -> Result<LibraryOverviewResponse, String>
 #[tauri::command]
 fn load_library_index(root_path: String) -> Result<KnowledgeBaseIndexResponse, String> {
     load_library_index_internal(&root_path)
+}
+
+#[tauri::command]
+fn search_library(
+    root_path: String,
+    payload: SearchLibraryPayload,
+) -> Result<Vec<SearchLibraryResult>, String> {
+    let query = payload.query.trim().to_lowercase();
+    let document_type_filter = payload
+        .document_type
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty() && *value != "all")
+        .map(|value| normalize_document_type(Some(value.to_string())));
+    let notebook_filter = payload
+        .notebook
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty() && value != "all");
+    let tag_filter = payload
+        .tag
+        .as_ref()
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| !value.is_empty() && value != "all");
+    let limit = payload.limit.unwrap_or(24).clamp(1, 50);
+
+    let parsed_notes = load_parsed_notes(&root_path)?;
+    let mut results = Vec::new();
+
+    for parsed_note in parsed_notes {
+        if let Some(document_type) = &document_type_filter {
+            if &parsed_note.summary.document_type != document_type {
+                continue;
+            }
+        }
+
+        if let Some(notebook) = &notebook_filter {
+            if parsed_note.summary.notebook.as_deref() != Some(notebook.as_str()) {
+                continue;
+            }
+        }
+
+        if let Some(tag) = &tag_filter {
+            if !parsed_note
+                .summary
+                .tags
+                .iter()
+                .any(|item| item.to_lowercase() == *tag)
+            {
+                continue;
+            }
+        }
+
+        let title = parsed_note.summary.title.to_lowercase();
+        let relative_path = parsed_note.summary.relative_path.to_lowercase();
+        let summary = parsed_note.summary.summary.to_lowercase();
+        let tags = parsed_note.summary.tags.join(" ").to_lowercase();
+        let body = parsed_note.body.to_lowercase();
+        let mut score = 0;
+        let mut match_kind = "recent".to_string();
+
+        if query.is_empty() {
+            score = 1;
+        } else {
+            if title.contains(&query) {
+                score += 70;
+                match_kind = "title".to_string();
+            }
+            if tags.contains(&query) {
+                score += 55;
+                if match_kind == "recent" {
+                    match_kind = "tag".to_string();
+                }
+            }
+            if relative_path.contains(&query) {
+                score += 35;
+                if match_kind == "recent" {
+                    match_kind = "path".to_string();
+                }
+            }
+            if summary.contains(&query) {
+                score += 25;
+                if match_kind == "recent" {
+                    match_kind = "summary".to_string();
+                }
+            }
+            if body.contains(&query) {
+                score += 15;
+                if match_kind == "recent" {
+                    match_kind = "body".to_string();
+                }
+            }
+
+            if score == 0 {
+                continue;
+            }
+        }
+
+        results.push(SearchLibraryResult {
+            snippet: search_snippet(&parsed_note.body, &query),
+            note: parsed_note.summary,
+            match_kind,
+            score,
+        });
+    }
+
+    results.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| right.note.updated_at_ms.cmp(&left.note.updated_at_ms))
+    });
+    results.truncate(limit);
+    Ok(results)
 }
 
 #[tauri::command]
@@ -3084,6 +3253,7 @@ pub fn run() {
             get_default_local_library,
             inspect_library,
             load_library_index,
+            search_library,
             list_migration_log,
             create_note,
             load_note_document,

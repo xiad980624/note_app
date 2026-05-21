@@ -135,6 +135,13 @@ type NoteConnections = {
   message: string
 }
 
+type SearchLibraryResult = {
+  note: RealNoteSummary
+  snippet: string
+  matchKind: string
+  score: number
+}
+
 type WorkspaceView = 'notes' | 'graph' | 'media'
 type MediaFilter = 'all' | 'image' | 'pdf' | 'video' | 'file'
 type SettingsTab = 'general' | 'sync'
@@ -158,7 +165,7 @@ type WikilinkDraft = {
 
 type CommandPaletteItem = {
   id: string
-  group: 'recent_notes' | 'tags' | 'actions'
+  group: 'search_results' | 'recent_notes' | 'tags' | 'actions'
   title: string
   subtitle?: string
   meta?: string
@@ -1155,6 +1162,11 @@ function App() {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [commandPaletteQuery, setCommandPaletteQuery] = useState('')
   const [commandPaletteIndex, setCommandPaletteIndex] = useState(0)
+  const [commandPaletteDocumentTypeFilter, setCommandPaletteDocumentTypeFilter] = useState<DocumentType | 'all'>('all')
+  const [commandPaletteNotebookFilter, setCommandPaletteNotebookFilter] = useState('all')
+  const [commandPaletteTagFilter, setCommandPaletteTagFilter] = useState('all')
+  const [searchResults, setSearchResults] = useState<SearchLibraryResult[]>([])
+  const [searchBusy, setSearchBusy] = useState(false)
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('general')
   const [storedNotebooks, setStoredNotebooks] = useState<string[]>(() => loadStoredNotebooks())
@@ -1266,6 +1278,11 @@ function App() {
   )
   const [assetPickerKind, setAssetPickerKind] = useState<AssetImportKind>('image')
   const libraryTags = useMemo(() => collectLibraryTags(knowledgeBaseIndex.notes), [knowledgeBaseIndex.notes])
+  const hasSearchFilters =
+    commandPaletteDocumentTypeFilter !== 'all' ||
+    commandPaletteNotebookFilter !== 'all' ||
+    commandPaletteTagFilter !== 'all'
+  const searchModeActive = commandPaletteQuery.trim().length > 0 || hasSearchFilters
   const noteConnectionsStatusMessage = !selectedNote
     ? 'Select a note to inspect links.'
     : !runningInTauri
@@ -2934,6 +2951,20 @@ function App() {
     const matches = (...parts: Array<string | undefined>) =>
       !query || parts.some((part) => part?.toLowerCase().includes(query))
 
+    const searchItems: CommandPaletteItem[] = searchModeActive
+      ? searchResults.map((result) => ({
+          id: `search:${result.note.id}`,
+          group: 'search_results' as const,
+          title: result.note.title,
+          subtitle: result.snippet,
+          meta: result.matchKind,
+          run: () => {
+            handleSelectNote(result.note.id)
+            closeCommandPalette()
+          },
+        }))
+      : []
+
     const recentNotes: CommandPaletteItem[] = knowledgeBaseIndex.notes
       .slice(0, 8)
       .filter((note) => matches(note.title, note.summary, note.relativePath, note.tags.join(' ')))
@@ -2956,9 +2987,10 @@ function App() {
         id: `tag:${tag}`,
         group: 'tags' as const,
         title: tag,
-        subtitle: 'Tag filter coming next',
+        subtitle: commandPaletteTagFilter === tag ? 'Current tag filter' : 'Filter search by this tag',
         run: () => {
-          closeCommandPalette()
+          setCommandPaletteTagFilter((current) => (current === tag ? 'all' : tag))
+          setCommandPaletteIndex(0)
         },
       }))
 
@@ -3027,10 +3059,11 @@ function App() {
       },
     ].filter((item) => matches(item.title, item.subtitle))
 
-    return [...recentNotes, ...tagItems, ...actionItems]
+    return [...searchItems, ...recentNotes, ...tagItems, ...actionItems]
   }, [
     closeCommandPalette,
     commandPaletteQuery,
+    commandPaletteTagFilter,
     handleCreateNote,
     handleSelectNote,
     handleSyncButtonClick,
@@ -3038,6 +3071,8 @@ function App() {
     libraryTags,
     navigateToView,
     openSettingsPanel,
+    searchModeActive,
+    searchResults,
     syncConfig,
   ])
 
@@ -3056,11 +3091,68 @@ function App() {
     commandPaletteItemsRef.current = commandPaletteItems
   }, [commandPaletteItems])
 
+  useEffect(() => {
+    if (!commandPaletteOpen || !runningInTauri || !localRootPath || !searchModeActive) {
+      setSearchResults([])
+      setSearchBusy(false)
+      return
+    }
+
+    let cancelled = false
+    setSearchBusy(true)
+    const timer = window.setTimeout(() => {
+      void invokeWithTimeout<SearchLibraryResult[]>('search_library', {
+        rootPath: localRootPath,
+        payload: {
+          query: commandPaletteQuery,
+          documentType: commandPaletteDocumentTypeFilter,
+          notebook: commandPaletteNotebookFilter,
+          tag: commandPaletteTagFilter,
+          limit: 24,
+        },
+      })
+        .then((results) => {
+          if (!cancelled) {
+            setSearchResults(results)
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setSearchResults([])
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setSearchBusy(false)
+          }
+        })
+    }, 160)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [
+    commandPaletteDocumentTypeFilter,
+    commandPaletteNotebookFilter,
+    commandPaletteOpen,
+    commandPaletteQuery,
+    commandPaletteTagFilter,
+    localRootPath,
+    runningInTauri,
+    searchModeActive,
+  ])
+
   const groupedCommandPaletteItems = useMemo(
     () => [
       {
+        key: 'search_results',
+        label: searchBusy ? 'SEARCHING' : 'SEARCH RESULTS',
+        items: commandPaletteItems.filter((item) => item.group === 'search_results'),
+      },
+      {
         key: 'recent_notes',
-        label: 'RECENT NOTES',
+        label: searchModeActive ? 'RECENT MATCHES' : 'RECENT NOTES',
         items: commandPaletteItems.filter((item) => item.group === 'recent_notes'),
       },
       {
@@ -3074,7 +3166,7 @@ function App() {
         items: commandPaletteItems.filter((item) => item.group === 'actions'),
       },
     ],
-    [commandPaletteItems],
+    [commandPaletteItems, searchBusy, searchModeActive],
   )
 
   const viewMeta = {
@@ -4151,6 +4243,64 @@ function App() {
                 }}
                 placeholder="Search notes, tags, or commands..."
               />
+            </div>
+            <div className="command-palette-filter-row" aria-label="Search filters">
+              <button
+                type="button"
+                className={`command-palette-filter ${commandPaletteDocumentTypeFilter === 'all' ? 'active' : ''}`}
+                onClick={() => setCommandPaletteDocumentTypeFilter('all')}
+              >
+                All
+              </button>
+              {documentTypeMeta.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  className={`command-palette-filter ${commandPaletteDocumentTypeFilter === item.key ? 'active' : ''}`}
+                  onClick={() => setCommandPaletteDocumentTypeFilter(item.key)}
+                >
+                  {item.label}
+                </button>
+              ))}
+              <select
+                value={commandPaletteNotebookFilter}
+                onChange={(event) => setCommandPaletteNotebookFilter(event.target.value)}
+                className="command-palette-select"
+                aria-label="Notebook filter"
+              >
+                <option value="all">All notebooks</option>
+                {notebookList.map((notebook) => (
+                  <option key={notebook.name} value={notebook.name}>
+                    {notebook.name}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={commandPaletteTagFilter}
+                onChange={(event) => setCommandPaletteTagFilter(event.target.value)}
+                className="command-palette-select"
+                aria-label="Tag filter"
+              >
+                <option value="all">All tags</option>
+                {libraryTags.map((tag) => (
+                  <option key={tag} value={tag}>
+                    #{tag}
+                  </option>
+                ))}
+              </select>
+              {hasSearchFilters ? (
+                <button
+                  type="button"
+                  className="command-palette-filter-clear"
+                  onClick={() => {
+                    setCommandPaletteDocumentTypeFilter('all')
+                    setCommandPaletteNotebookFilter('all')
+                    setCommandPaletteTagFilter('all')
+                  }}
+                >
+                  Clear
+                </button>
+              ) : null}
             </div>
             <div className="command-palette-results">
               {groupedCommandPaletteItems.some((group) => group.items.length > 0) ? (
