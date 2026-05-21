@@ -160,6 +160,8 @@ Implemented and working at a meaningful first pass:
 - local asset import
 - backlinks / outgoing links / tags sidebar
 - command palette
+- command palette backed by local full-text search
+- search filters for document type, notebook, and tag
 - sync entry and first-pass sync workflow
 - notebook creation
 - notebook assignment UI
@@ -198,7 +200,7 @@ Remaining validation:
 ## 9. Recommended next work
 
 P1:
-1. strengthen search
+1. improve search ranking/highlighting and saved filters
 2. continue graph/media work
 3. improve sync conflict UX
 4. move credentials into safer storage

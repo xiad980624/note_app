@@ -126,7 +126,7 @@ flowchart TD
 | EditorBody | 正文编辑 | Markdown-first |
 | RelationPanel | Backlinks / Outgoing / Tags | 标签页式切换 |
 | NotebookMenu | 归档到 notebook | 面板式，而非粗糙右键菜单 |
-| CommandPalette | 全局搜索与动作 | `Cmd/Ctrl + K` |
+| CommandPalette | 全局搜索与动作 | `Cmd/Ctrl + K`，支持全文搜索与类型 / notebook / tag 过滤 |
 | SyncEntry | 顶部同步状态入口 | 图标态 |
 
 ## 8. 空状态
@@ -142,6 +142,12 @@ flowchart TD
 ### 无搜索结果
 文案：`没有找到相关内容`
 操作：`继续输入，或创建新文档`
+
+### 搜索过滤
+- 搜索面板顶部保留轻量过滤器。
+- 文档类型使用分段按钮。
+- notebook 和 tag 使用下拉选择。
+- 有过滤条件时提供一键清除。
 
 ## 9. 设计注意事项
 - 当前 UI 已不再使用“收件箱 / projects / topics”作为首屏组织模型。
