@@ -75,7 +75,15 @@ struct LegacyMigrationReport {
     sources: Vec<LegacyMigrationSource>,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct LegacyMigrationLogEntry {
+    migrated_at_ms: u64,
+    migrated_note_count: usize,
+    sources: Vec<LegacyMigrationSource>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct LegacyMigrationSource {
     source: String,
@@ -421,6 +429,52 @@ fn default_local_library_path() -> Result<String, String> {
     Ok(format!("{home}/Documents/NoteBase"))
 }
 
+fn migration_log_path(layout: &LibraryLayout) -> PathBuf {
+    Path::new(&layout.hidden_root).join("migration-log.json")
+}
+
+fn load_migration_log_from_layout(
+    layout: &LibraryLayout,
+) -> Result<Vec<LegacyMigrationLogEntry>, String> {
+    let path = migration_log_path(layout);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let raw = fs::read_to_string(&path)
+        .map_err(|error| format!("Failed to read migration log {}: {error}", path.display()))?;
+    serde_json::from_str(&raw)
+        .map_err(|error| format!("Failed to parse migration log {}: {error}", path.display()))
+}
+
+fn save_migration_log_to_layout(
+    layout: &LibraryLayout,
+    entries: &[LegacyMigrationLogEntry],
+) -> Result<(), String> {
+    let path = migration_log_path(layout);
+    let raw = serde_json::to_string_pretty(entries)
+        .map_err(|error| format!("Failed to serialize migration log: {error}"))?;
+    fs::write(&path, raw)
+        .map_err(|error| format!("Failed to write migration log {}: {error}", path.display()))
+}
+
+fn append_migration_log_entry(
+    layout: &LibraryLayout,
+    report: &LegacyMigrationReport,
+) -> Result<(), String> {
+    if report.migrated_note_count == 0 {
+        return Ok(());
+    }
+
+    let mut entries = load_migration_log_from_layout(layout)?;
+    entries.push(LegacyMigrationLogEntry {
+        migrated_at_ms: current_timestamp_ms()?,
+        migrated_note_count: report.migrated_note_count,
+        sources: report.sources.clone(),
+    });
+    save_migration_log_to_layout(layout, &entries)
+}
+
 fn sync_profile_key(config: &SyncConfigPayload, remote_root_path: &str) -> String {
     format!("{}|{}", config.webdav_url(), remote_root_path)
 }
@@ -467,6 +521,7 @@ fn ensure_library_layout(root_path: &str) -> Result<LibraryLayout, String> {
         legacy_migration: LegacyMigrationReport::default(),
     };
     layout.legacy_migration = migrate_legacy_note_directories(&layout)?;
+    append_migration_log_entry(&layout, &layout.legacy_migration)?;
     Ok(layout)
 }
 
@@ -564,6 +619,7 @@ fn migrate_legacy_note_directories(
                 target: target_label.to_string(),
                 count: migrated_count,
             });
+            let _ = fs::remove_dir(&legacy_directory);
         }
     }
 
@@ -1110,6 +1166,22 @@ fn normalize_document_type(input: Option<String>) -> String {
         "todo" | "todolist" => "todo".to_string(),
         "journal" | "diary" => "journal".to_string(),
         _ => "note".to_string(),
+    }
+}
+
+fn default_title_for_document_type(document_type: &str) -> &'static str {
+    match document_type {
+        "todo" => "Untitled todo",
+        "journal" => "Journal entry",
+        _ => "Untitled note",
+    }
+}
+
+fn default_body_for_document_type(document_type: &str, title: &str) -> String {
+    match document_type {
+        "todo" => format!("# {title}\n\n- [ ] "),
+        "journal" => format!("# {title}\n\n"),
+        _ => format!("# {title}\n\n"),
     }
 }
 
@@ -2005,6 +2077,12 @@ fn load_library_index(root_path: String) -> Result<KnowledgeBaseIndexResponse, S
 }
 
 #[tauri::command]
+fn list_migration_log(root_path: String) -> Result<Vec<LegacyMigrationLogEntry>, String> {
+    let layout = ensure_library_layout(&root_path)?;
+    load_migration_log_from_layout(&layout)
+}
+
+#[tauri::command]
 fn create_note(
     root_path: String,
     notebook: Option<String>,
@@ -2012,9 +2090,9 @@ fn create_note(
 ) -> Result<CreateNoteResponse, String> {
     let layout = ensure_library_layout(&root_path)?;
     let timestamp_ms = current_timestamp_ms()?;
-    let title = "Untitled note";
-    let slug = slugify_title(title);
     let normalized_document_type = normalize_document_type(document_type);
+    let title = default_title_for_document_type(&normalized_document_type);
+    let slug = slugify_title(title);
     let notebook_value = notebook.and_then(|value| {
         let trimmed = value.trim().to_string();
         if trimmed.is_empty() {
@@ -2037,10 +2115,11 @@ fn create_note(
         .replace('\\', "/");
     let relative_path = format!("{}/{}-{}.md", target_folder, slug, timestamp_ms);
     let note_path = Path::new(&layout.notes_root).join(&relative_path);
+    let default_body = default_body_for_document_type(&normalized_document_type, title);
 
     let content = build_note_content_with_metadata(
         None,
-        "# Untitled note\n\nStart writing...\n",
+        &default_body,
         title,
         &format!("note-{timestamp_ms}"),
         timestamp_ms,
@@ -3005,6 +3084,7 @@ pub fn run() {
             get_default_local_library,
             inspect_library,
             load_library_index,
+            list_migration_log,
             create_note,
             load_note_document,
             save_note_document,
