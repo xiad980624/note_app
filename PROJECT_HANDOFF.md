@@ -143,6 +143,7 @@ Legacy compatibility:
   - `projects/` -> `notes/notebooks/Projects/`
   - `topics/` -> `notes/notebooks/Topics/`
 - migration also rewrites relative markdown links when a document moves folders
+- `load_library_index` returns a migration report so the UI can show a dismissible migration notice
 
 ## 6. Implemented capabilities
 
@@ -187,7 +188,7 @@ Implemented and working at a meaningful first pass:
 These are the most important known issues right now:
 
 1. Drag-and-drop still needs real-device UX verification in the Tauri window
-2. Legacy migration needs a visible confirmation/log surface before beta
+2. Legacy migration still needs a persistent log surface before beta
 3. The notebook context menu has improved, but still needs polish
 4. Graph and Media views exist, but are not the current priority
 
@@ -195,7 +196,7 @@ These are the most important known issues right now:
 
 Near-term:
 1. verify notebook drag-and-drop in the running desktop app
-2. add a user-visible migration summary for old libraries
+2. add a persistent migration log for old libraries
 3. continue polishing writing UX on top of the title + body model
 
 Later:

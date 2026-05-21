@@ -66,8 +66,18 @@ type KnowledgeBaseIndex = {
   assetsRoot: string
   hiddenRoot: string
   initializedNewKnowledgeBase: boolean
+  legacyMigration: LegacyMigrationReport
   notes: RealNoteSummary[]
   message: string
+}
+
+type LegacyMigrationReport = {
+  migratedNoteCount: number
+  sources: Array<{
+    source: string
+    target: string
+    count: number
+  }>
 }
 
 type CreateNoteResponse = {
@@ -1069,12 +1079,14 @@ function App() {
   const [localLibraryMessage, setLocalLibraryMessage] = useState(
     'Preparing the default offline knowledge base path.',
   )
+  const [libraryNotice, setLibraryNotice] = useState<string | null>(null)
   const [knowledgeBaseIndex, setKnowledgeBaseIndex] = useState<KnowledgeBaseIndex>({
     rootPath: BROWSER_LOCAL_PATH_PLACEHOLDER,
     notesRoot: `${BROWSER_LOCAL_PATH_PLACEHOLDER}/notes`,
     assetsRoot: `${BROWSER_LOCAL_PATH_PLACEHOLDER}/assets`,
     hiddenRoot: `${BROWSER_LOCAL_PATH_PLACEHOLDER}/.notebase`,
     initializedNewKnowledgeBase: false,
+    legacyMigration: { migratedNoteCount: 0, sources: [] },
     notes: [],
     message: 'Waiting for the offline knowledge base path.',
   })
@@ -1303,15 +1315,21 @@ function App() {
         assetsRoot: `${BROWSER_LOCAL_PATH_PLACEHOLDER}/assets`,
         hiddenRoot: `${BROWSER_LOCAL_PATH_PLACEHOLDER}/.notebase`,
         initializedNewKnowledgeBase: false,
+        legacyMigration: { migratedNoteCount: 0, sources: [] },
         notes: [],
         message: 'Browser preview detected. Offline indexing runs in the Tauri desktop app.',
       })
+      setLibraryNotice(null)
       return
     }
 
     const indexResponse = await invokeWithTimeout<KnowledgeBaseIndex>('load_library_index', { rootPath })
 
     setKnowledgeBaseIndex(indexResponse)
+    setLocalLibraryMessage(indexResponse.message)
+    setLibraryNotice(
+      indexResponse.legacyMigration.migratedNoteCount > 0 ? indexResponse.message : null,
+    )
     setSelectedNoteId((current) => {
       if (current && indexResponse.notes.some((note) => note.id === current)) {
         return current
@@ -3188,6 +3206,15 @@ function App() {
               </div>
             </div>
           </header>
+
+          {libraryNotice ? (
+            <div className="library-notice">
+              <span>{libraryNotice}</span>
+              <button type="button" onClick={() => setLibraryNotice(null)} aria-label="Dismiss library notice">
+                ×
+              </button>
+            </div>
+          ) : null}
 
           {workspaceView === 'notes' ? (
             <div className="workspace-grid">

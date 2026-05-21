@@ -77,6 +77,37 @@
   line-height: 1.25;
 }
 
+.library-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 10px 16px 0;
+  padding: 8px 10px 8px 12px;
+  border: 1px solid rgba(29, 111, 242, 0.13);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.76);
+  color: rgba(39, 45, 58, 0.8);
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+.library-notice button {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(39, 45, 58, 0.06);
+  color: rgba(39, 45, 58, 0.58);
+  font: inherit;
+  line-height: 1;
+}
+
+.library-notice button:hover {
+  background: rgba(39, 45, 58, 0.1);
+  color: rgba(39, 45, 58, 0.86);
+}
+
 .topbar {
   display: grid;
   grid-template-columns: auto auto minmax(320px, 1fr) auto;

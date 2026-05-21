@@ -63,8 +63,24 @@ struct KnowledgeBaseIndexResponse {
     assets_root: String,
     hidden_root: String,
     initialized_new_knowledge_base: bool,
+    legacy_migration: LegacyMigrationReport,
     notes: Vec<NoteSummary>,
     message: String,
+}
+
+#[derive(Debug, Default, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct LegacyMigrationReport {
+    migrated_note_count: usize,
+    sources: Vec<LegacyMigrationSource>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct LegacyMigrationSource {
+    source: String,
+    target: String,
+    count: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -288,6 +304,7 @@ struct LibraryLayout {
     assets_root: String,
     hidden_root: String,
     initialized_new_knowledge_base: bool,
+    legacy_migration: LegacyMigrationReport,
 }
 
 #[derive(Debug, Clone)]
@@ -441,28 +458,30 @@ fn ensure_library_layout(root_path: &str) -> Result<LibraryLayout, String> {
         })?;
     }
 
-    Ok(LibraryLayout {
+    let mut layout = LibraryLayout {
         root_path: normalized_root,
         notes_root,
         assets_root,
         hidden_root,
         initialized_new_knowledge_base,
-    })
-    .and_then(|layout| {
-        migrate_legacy_note_directories(&layout)?;
-        Ok(layout)
-    })
+        legacy_migration: LegacyMigrationReport::default(),
+    };
+    layout.legacy_migration = migrate_legacy_note_directories(&layout)?;
+    Ok(layout)
 }
 
-fn migrate_legacy_note_directories(layout: &LibraryLayout) -> Result<(), String> {
+fn migrate_legacy_note_directories(
+    layout: &LibraryLayout,
+) -> Result<LegacyMigrationReport, String> {
     let notes_root = Path::new(&layout.notes_root);
     let legacy_directories = [
-        ("inbox", None),
-        ("projects", Some("Projects")),
-        ("topics", Some("Topics")),
+        ("inbox", None, "notes/note"),
+        ("projects", Some("Projects"), "notes/notebooks/Projects"),
+        ("topics", Some("Topics"), "notes/notebooks/Topics"),
     ];
+    let mut report = LegacyMigrationReport::default();
 
-    for (legacy_folder, target_notebook) in legacy_directories {
+    for (legacy_folder, target_notebook, target_label) in legacy_directories {
         let legacy_directory = notes_root.join(legacy_folder);
         if !legacy_directory.exists() {
             continue;
@@ -470,6 +489,7 @@ fn migrate_legacy_note_directories(layout: &LibraryLayout) -> Result<(), String>
 
         let mut markdown_files = Vec::new();
         collect_markdown_files(&legacy_directory, &mut markdown_files)?;
+        let mut migrated_count = 0;
 
         for note_path in markdown_files {
             let existing_raw_content = fs::read_to_string(&note_path).map_err(|error| {
@@ -534,10 +554,20 @@ fn migrate_legacy_note_directories(layout: &LibraryLayout) -> Result<(), String>
                     note_path.display()
                 )
             })?;
+            migrated_count += 1;
+        }
+
+        if migrated_count > 0 {
+            report.migrated_note_count += migrated_count;
+            report.sources.push(LegacyMigrationSource {
+                source: format!("notes/{legacy_folder}"),
+                target: target_label.to_string(),
+                count: migrated_count,
+            });
         }
     }
 
-    Ok(())
+    Ok(report)
 }
 
 fn layout_to_index_response(layout: &LibraryLayout, message: String) -> KnowledgeBaseIndexResponse {
@@ -547,6 +577,7 @@ fn layout_to_index_response(layout: &LibraryLayout, message: String) -> Knowledg
         assets_root: layout.assets_root.clone(),
         hidden_root: layout.hidden_root.clone(),
         initialized_new_knowledge_base: layout.initialized_new_knowledge_base,
+        legacy_migration: layout.legacy_migration.clone(),
         notes: Vec::new(),
         message,
     }
@@ -1583,14 +1614,31 @@ fn load_library_index_internal(root_path: &str) -> Result<KnowledgeBaseIndexResp
 
     notes.sort_by(|left, right| right.updated_at_ms.cmp(&left.updated_at_ms));
     let note_count = notes.len();
-    let mut response = layout_to_index_response(
-        &layout,
-        if layout.initialized_new_knowledge_base {
-            format!("A new local knowledge base was created and {note_count} markdown notes were indexed.")
-        } else {
-            format!("Local knowledge base is ready and {note_count} markdown notes were indexed.")
-        },
-    );
+    let message = if layout.legacy_migration.migrated_note_count > 0 {
+        let source_summary = layout
+            .legacy_migration
+            .sources
+            .iter()
+            .map(|source| {
+                format!(
+                    "{} from {} to {}",
+                    source.count, source.source, source.target
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "Migrated {} legacy markdown notes ({source_summary}). Local knowledge base is ready and {note_count} markdown notes were indexed.",
+            layout.legacy_migration.migrated_note_count
+        )
+    } else if layout.initialized_new_knowledge_base {
+        format!(
+            "A new local knowledge base was created and {note_count} markdown notes were indexed."
+        )
+    } else {
+        format!("Local knowledge base is ready and {note_count} markdown notes were indexed.")
+    };
+    let mut response = layout_to_index_response(&layout, message);
     response.notes = notes;
     Ok(response)
 }
