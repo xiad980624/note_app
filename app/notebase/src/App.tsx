@@ -80,6 +80,12 @@ type LegacyMigrationReport = {
   }>
 }
 
+type LegacyMigrationLogEntry = {
+  migratedAtMs: number
+  migratedNoteCount: number
+  sources: LegacyMigrationReport['sources']
+}
+
 type CreateNoteResponse = {
   note: RealNoteSummary
   message: string
@@ -1075,11 +1081,12 @@ const unindentSelectedLines = (body: string, selectionStart: number, selectionEn
 }
 
 function App() {
-  const [localRootPath, setLocalRootPath] = useState(BROWSER_LOCAL_PATH_PLACEHOLDER)
+  const [localRootPath, setLocalRootPath] = useState('')
   const [localLibraryMessage, setLocalLibraryMessage] = useState(
     'Preparing the default offline knowledge base path.',
   )
   const [libraryNotice, setLibraryNotice] = useState<string | null>(null)
+  const [migrationLog, setMigrationLog] = useState<LegacyMigrationLogEntry[]>([])
   const [knowledgeBaseIndex, setKnowledgeBaseIndex] = useState<KnowledgeBaseIndex>({
     rootPath: BROWSER_LOCAL_PATH_PLACEHOLDER,
     notesRoot: `${BROWSER_LOCAL_PATH_PLACEHOLDER}/notes`,
@@ -1169,6 +1176,7 @@ function App() {
     ? editorTitle !== lastSavedTitle || editorBody !== lastSavedBody
     : false
   const syncButtonTone = syncToneFromStatus(syncStatus, syncBusy)
+  const editorTitleRef = useRef<HTMLInputElement | null>(null)
   const editorTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const richTextEditorRef = useRef<HTMLDivElement | null>(null)
   const assetPickerRef = useRef<HTMLInputElement | null>(null)
@@ -1367,6 +1375,20 @@ function App() {
     }
   }, [runningInTauri])
 
+  const refreshMigrationLog = useCallback(async (rootPath: string) => {
+    if (!runningInTauri) {
+      setMigrationLog([])
+      return
+    }
+
+    try {
+      const entries = await invokeWithTimeout<LegacyMigrationLogEntry[]>('list_migration_log', { rootPath })
+      setMigrationLog(entries.slice().sort((left, right) => right.migratedAtMs - left.migratedAtMs))
+    } catch {
+      setMigrationLog([])
+    }
+  }, [runningInTauri])
+
   const loadSelectedNoteDocument = useCallback(async (noteId: string, rootPath: string) => {
     if (!runningInTauri) {
       setSelectedNoteDocument(null)
@@ -1391,6 +1413,13 @@ function App() {
       setPendingTags(response.note.tags.join(', '))
       setSaveStatus('idle')
       setSaveMessage(response.message)
+      if (
+        response.note.title === DEFAULT_NOTE_TITLE ||
+        response.note.title === 'Untitled todo' ||
+        response.note.title === 'Journal entry'
+      ) {
+        window.requestAnimationFrame(() => editorTitleRef.current?.select())
+      }
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'Failed to load the selected note content.'
@@ -1463,6 +1492,7 @@ function App() {
         setLocalLibraryMessage(response.message)
         await refreshLocalWorkspace(response.rootPath)
         await refreshMediaAssets(response.rootPath)
+        await refreshMigrationLog(response.rootPath)
 
         if (syncConfig) {
           await assessSyncReadiness(response.rootPath, syncConfig)
@@ -1491,10 +1521,10 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [assessSyncReadiness, refreshLocalWorkspace, refreshMediaAssets, runningInTauri, syncConfig])
+  }, [assessSyncReadiness, refreshLocalWorkspace, refreshMediaAssets, refreshMigrationLog, runningInTauri, syncConfig])
 
   useEffect(() => {
-    if (!selectedNoteId) {
+    if (!selectedNoteId || !localRootPath) {
       return
     }
 
@@ -1503,7 +1533,7 @@ function App() {
   }, [selectedNoteId, localRootPath, loadSelectedNoteDocument])
 
   useEffect(() => {
-    if (!selectedNoteId || !runningInTauri) {
+    if (!selectedNoteId || !runningInTauri || !localRootPath) {
       return
     }
 
@@ -2350,7 +2380,7 @@ function App() {
     handleSelectNote(noteId)
   }, [handleSelectNote])
 
-  const handleCreateNote = useCallback(async (documentType: DocumentType = 'note') => {
+  const handleCreateNote = useCallback(async (documentType: DocumentType = 'note', notebook?: string | null) => {
     if (
       hasUnsavedChanges &&
       !window.confirm('You have unsaved changes in the current note. Create a new note anyway?')
@@ -2363,15 +2393,29 @@ function App() {
       setSaveMessage('Creating a note needs the Tauri desktop runtime. The browser preview cannot write files.')
       return
     }
+    if (!localRootPath) {
+      setSaveStatus('error')
+      setSaveMessage('The offline knowledge base path is still loading.')
+      return
+    }
 
     try {
       const response = await invokeWithTimeout<CreateNoteResponse>('create_note', {
         rootPath: localRootPath,
         documentType,
+        notebook: notebook ?? null,
       })
       await refreshLocalWorkspace(localRootPath)
       await refreshMediaAssets(localRootPath)
-      setActiveDirectorySelection({ kind: 'type', value: documentType })
+      if (notebook) {
+        setStoredNotebooks((current) =>
+          current.includes(notebook) ? current : [...current, notebook].sort((a, b) => a.localeCompare(b)),
+        )
+        setExpandedSections((current) => ({ ...current, notebooks: true }))
+        setActiveDirectorySelection({ kind: 'notebook', value: notebook })
+      } else {
+        setActiveDirectorySelection({ kind: 'type', value: documentType })
+      }
       setSelectedNoteId(response.note.id)
       setSaveStatus('saved')
       setSaveMessage(response.message)
@@ -3558,6 +3602,7 @@ function App() {
                       ) : (
                         <div className="writer-stack">
                           <input
+                            ref={editorTitleRef}
                             className="editor-title-field"
                             value={editorTitle}
                             onChange={(event) => handleEditorTitleChange(event.target.value)}
@@ -3656,6 +3701,21 @@ function App() {
                             ? `Choose a note from ${activeDirectorySelection.value} to start editing.`
                             : 'Choose a document from the directory tree to start editing.'}
                         </p>
+                        <button
+                          type="button"
+                          className="empty-state-action"
+                          onClick={() =>
+                            activeDirectorySelection.kind === 'notebook'
+                              ? void handleCreateNote('note', activeDirectorySelection.value)
+                              : void handleCreateNote(activeDirectorySelection.value)
+                          }
+                        >
+                          {activeDirectorySelection.kind === 'notebook'
+                            ? 'Create note in this notebook'
+                            : `Create ${documentTypeMeta
+                                .find((item) => item.key === activeDirectorySelection.value)
+                                ?.createLabel.toLowerCase() ?? 'note'}`}
+                        </button>
                       </div>
                     )}
                   </article>
@@ -4356,7 +4416,7 @@ function App() {
                     <div className="resolved-path-card">
                       <div className="storage-explanation-row">
                         <span>Offline knowledge base</span>
-                        <strong>{localRootPath}</strong>
+                        <strong>{localRootPath || 'Preparing local library...'}</strong>
                       </div>
                       <div className="storage-explanation-row">
                         <span>Notebooks</span>
@@ -4366,6 +4426,31 @@ function App() {
                             : 'No notebooks yet'}
                         </strong>
                       </div>
+                    </div>
+                    <div className="migration-log-card">
+                      <div className="migration-log-header">
+                        <strong>Migration log</strong>
+                        <span>{migrationLog.length} event{migrationLog.length === 1 ? '' : 's'}</span>
+                      </div>
+                      {migrationLog.length > 0 ? (
+                        <div className="migration-log-list">
+                          {migrationLog.slice(0, 4).map((entry) => (
+                            <div key={`${entry.migratedAtMs}-${entry.migratedNoteCount}`} className="migration-log-item">
+                              <strong>
+                                {entry.migratedNoteCount} note{entry.migratedNoteCount === 1 ? '' : 's'} migrated
+                              </strong>
+                              <span>{formatRelativeDate(entry.migratedAtMs)}</span>
+                              <p>
+                                {entry.sources
+                                  .map((source) => `${source.count} from ${source.source} to ${source.target}`)
+                                  .join(', ')}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="migration-log-empty">No legacy migrations have run for this library.</p>
+                      )}
                     </div>
                   </>
                 ) : (

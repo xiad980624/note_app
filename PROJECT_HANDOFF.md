@@ -164,6 +164,9 @@ Implemented and working at a meaningful first pass:
 - notebook creation
 - notebook assignment UI
 - pointer-based notebook drag and drop with target highlighting
+- persistent legacy migration log in `.notebase/migration-log.json`
+- empty directory/editor actions for creating the next note in place
+- minimum Todo and Journal creation templates
 
 ## 7. Important current behavior
 
@@ -172,34 +175,29 @@ Implemented and working at a meaningful first pass:
 - title is edited separately from body
 - save composes title + body back into markdown
 - preview renders from the composed markdown
+- new notes focus the title when they still use the default title
 
 ### Notebook assignment
 - notes shown in `Todo Lists / Notes / Journal` are intended to be only unassigned notes
 - notes shown under `Notebooks` are assigned notes
-- notebook assignment is being converted from metadata-only behavior into true file movement semantics
+- notebook assignment is true file movement semantics
 
 ### Sync
 - local library is always primary
 - sync is optional
 - sync configuration is behind the sync entry, not in the editor workflow
 
-## 8. Known gaps and rough edges
+## 8. P0 status
 
-These are the most important known issues right now:
+P0 is intended to be closed after this branch is verified in the running Tauri desktop app.
 
-1. Drag-and-drop still needs real-device UX verification in the Tauri window
-2. Legacy migration still needs a persistent log surface before beta
-3. The notebook context menu has improved, but still needs polish
-4. Graph and Media views exist, but are not the current priority
+Remaining validation:
+1. run the desktop app and verify note creation, editing, autosave, notebook drag-and-drop, and settings migration log
+2. fix only regressions found during that pass
 
 ## 9. Recommended next work
 
-Near-term:
-1. verify notebook drag-and-drop in the running desktop app
-2. add a persistent migration log for old libraries
-3. continue polishing writing UX on top of the title + body model
-
-Later:
+P1:
 1. strengthen search
 2. continue graph/media work
 3. improve sync conflict UX

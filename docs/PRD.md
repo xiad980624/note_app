@@ -167,6 +167,8 @@ KnowledgeBase/
   - `topics` -> `notes/notebooks/Topics/`
 - 迁移时需要补齐 `documentType` / `notebook` 元数据，并同步维护正文中的相对附件路径。
 - 如果启动时发生旧目录迁移，界面应提示用户迁移了多少文档以及迁移来源。
+- 迁移历史需要写入 `.notebase/migration-log.json`，设置页可回看最近迁移记录。
+- 空目录或空 notebook 应直接提供“在这里新建”入口，降低首次使用阻力。
 
 ### 4.5 跨端支持
 #### macOS
