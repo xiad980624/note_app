@@ -166,6 +166,7 @@ KnowledgeBase/
   - `projects` -> `notes/notebooks/Projects/`
   - `topics` -> `notes/notebooks/Topics/`
 - 迁移时需要补齐 `documentType` / `notebook` 元数据，并同步维护正文中的相对附件路径。
+- 如果启动时发生旧目录迁移，界面应提示用户迁移了多少文档以及迁移来源。
 
 ### 4.5 跨端支持
 #### macOS

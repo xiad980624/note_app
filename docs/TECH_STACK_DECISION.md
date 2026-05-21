@@ -111,6 +111,7 @@ KnowledgeBase/
   - `projects` 迁移为 notebook `Projects`
   - `topics` 迁移为 notebook `Topics`
 - 对于位于 `notes/notebooks/<Notebook Name>/` 但缺少 frontmatter 的文档，索引层会从路径推断 `notebook`。
+- `load_library_index` 返回 `legacyMigration`，前端据此展示一次性的迁移提示。
 
 ## 6. 后续优化方向
 
@@ -120,7 +121,7 @@ KnowledgeBase/
 - 删除同步与墓碑记录，避免“只复制不清理”导致的残留文件。
 - 冲突解决 UI，包括逐文件比较、保留哪一侧、或生成副本。
 - 同步历史、失败恢复、重试队列和后台自动同步策略。
-- 旧知识库目录迁移的可视化确认与迁移日志。
+- 旧知识库目录迁移的持久化迁移日志和回滚说明。
 
 ## 5. 开发顺序确认
 
