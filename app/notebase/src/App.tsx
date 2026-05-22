@@ -1220,6 +1220,7 @@ function App() {
   )
   const [decisionPanelOpen, setDecisionPanelOpen] = useState(false)
   const [syncBusy, setSyncBusy] = useState(false)
+  const [resolvingConflictPath, setResolvingConflictPath] = useState<string | null>(null)
   const [isDragActive, setIsDragActive] = useState(false)
   const [codeLanguageMenuOpen, setCodeLanguageMenuOpen] = useState(false)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
@@ -2785,6 +2786,10 @@ function App() {
       })
       setSyncStatus(response)
       setDecisionPanelOpen(false)
+      if (response.conflictCount > 0) {
+        setSettingsTab('sync')
+        setSettingsPanelOpen(true)
+      }
       await refreshLocalWorkspace(localRootPath)
       await refreshMediaAssets(localRootPath)
     } catch (error) {
@@ -2797,6 +2802,39 @@ function App() {
       })
     } finally {
       setSyncBusy(false)
+    }
+  }, [localRootPath, refreshLocalWorkspace, refreshMediaAssets, syncConfig])
+
+  const handleResolveSyncConflict = useCallback(async (
+    relativePath: string,
+    resolution: 'keep_local' | 'keep_remote',
+  ) => {
+    if (!syncConfig) {
+      setSettingsTab('sync')
+      setSettingsPanelOpen(true)
+      return
+    }
+
+    setResolvingConflictPath(relativePath)
+    try {
+      const response = await invokeWithTimeout<SyncStatusResponse>('resolve_sync_conflict', {
+        payload: {
+          localRootPath,
+          config: syncConfig,
+          relativePath,
+          resolution,
+        },
+      })
+      setSyncStatus(response)
+      await refreshLocalWorkspace(localRootPath)
+      await refreshMediaAssets(localRootPath)
+      setSaveStatus('saved')
+      setSaveMessage(response.message)
+    } catch (error) {
+      setSaveStatus('error')
+      setSaveMessage(error instanceof Error ? error.message : 'Failed to resolve the selected sync conflict.')
+    } finally {
+      setResolvingConflictPath(null)
     }
   }, [localRootPath, refreshLocalWorkspace, refreshMediaAssets, syncConfig])
 
@@ -2815,8 +2853,15 @@ function App() {
       return
     }
 
+    if (syncStatus.status === 'conflicted' || syncStatus.conflictCount > 0) {
+      setDraftSyncConfig(syncConfig)
+      setSettingsTab('sync')
+      setSettingsPanelOpen(true)
+      return
+    }
+
     void handleRunSyncWithOptions('push_local_to_remote', false)
-  }, [handleRunSyncWithOptions, syncConfig, syncStatus.status])
+  }, [handleRunSyncWithOptions, syncConfig, syncStatus.conflictCount, syncStatus.status])
 
   const handleDisconnectSync = () => {
     setSyncConfig(null)
@@ -4982,6 +5027,70 @@ function App() {
                       Configure WebDAV only when you want the offline library to sync with a remote
                       target.
                     </p>
+                    <div className={`sync-summary-card sync-summary-card-${syncButtonTone}`}>
+                      <strong>{syncStatus.message}</strong>
+                      <span>
+                        {syncStatus.conflictCount > 0
+                          ? `${syncStatus.conflictCount} conflict${syncStatus.conflictCount === 1 ? '' : 's'} need a decision.`
+                          : syncStatus.copiedCount > 0 || syncStatus.skippedCount > 0
+                            ? `${syncStatus.copiedCount} copied • ${syncStatus.skippedCount} unchanged`
+                            : syncStatus.configured
+                              ? 'Sync target is configured.'
+                              : 'Sync is not configured yet.'}
+                      </span>
+                    </div>
+                    {syncStatus.localSnapshot || syncStatus.remoteSnapshot ? (
+                      <div className="sync-snapshot-grid">
+                        {syncStatus.localSnapshot ? (
+                          <div className="sync-snapshot-card">
+                            <strong>Local offline library</strong>
+                            <span>{syncStatus.localSnapshot.noteCount} notes</span>
+                            <span>{syncStatus.localSnapshot.assetFileCount} assets</span>
+                            <span>{syncStatus.localSnapshot.message}</span>
+                          </div>
+                        ) : null}
+                        {syncStatus.remoteSnapshot ? (
+                          <div className="sync-snapshot-card">
+                            <strong>Remote sync target</strong>
+                            <span>{syncStatus.remoteSnapshot.noteCount} notes</span>
+                            <span>{syncStatus.remoteSnapshot.assetFileCount} assets</span>
+                            <span>{syncStatus.remoteSnapshot.message}</span>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {syncStatus.conflicts.length > 0 ? (
+                      <div className="sync-conflict-list">
+                        <strong>Resolve sync conflicts</strong>
+                        <span>Choose whether each file should keep the local version or the remote version.</span>
+                        {syncStatus.conflicts.map((relativePath) => {
+                          const busy = resolvingConflictPath === relativePath
+                          return (
+                            <div key={relativePath} className="sync-conflict-item">
+                              <span>{relativePath}</span>
+                              <div className="sync-conflict-actions">
+                                <button
+                                  type="button"
+                                  className="ghost-action"
+                                  disabled={syncBusy || Boolean(resolvingConflictPath)}
+                                  onClick={() => void handleResolveSyncConflict(relativePath, 'keep_local')}
+                                >
+                                  {busy ? 'Resolving…' : 'Keep local'}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="ghost-action"
+                                  disabled={syncBusy || Boolean(resolvingConflictPath)}
+                                  onClick={() => void handleResolveSyncConflict(relativePath, 'keep_remote')}
+                                >
+                                  {busy ? 'Resolving…' : 'Keep remote'}
+                                </button>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    ) : null}
                     <div className="protocol-switcher" role="tablist" aria-label="WebDAV protocol">
                       <button
                         type="button"
