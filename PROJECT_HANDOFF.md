@@ -167,6 +167,7 @@ Implemented and working at a meaningful first pass:
 - media library `Unlinked` filter for orphan attachment review
 - media library safe delete flow for unlinked assets only
 - media library sorting and richer sidebar previews for image/video/pdf/audio
+- sync settings now surface conflict summaries and per-file keep-local / keep-remote actions
 - sync entry and first-pass sync workflow
 - notebook creation
 - notebook assignment UI
@@ -194,6 +195,8 @@ Implemented and working at a meaningful first pass:
 - local library is always primary
 - sync is optional
 - sync configuration is behind the sync entry, not in the editor workflow
+- when a sync run finds conflicts, the sync entry now routes the user into the sync settings view instead of retrying blindly
+- the sync settings view shows local/remote snapshots plus per-file resolution actions
 
 ### Media
 - asset linkage is resolved from real markdown link targets, not filename substring matching
@@ -216,7 +219,7 @@ Remaining validation:
 P1:
 1. improve search ranking/highlighting and saved filters
 2. continue graph polish and media library batch operations / bulk selection
-3. improve sync conflict UX
+3. improve sync conflict UX beyond the current per-file resolution list
 4. move credentials into safer storage
 
 ## 10. Environment and verification

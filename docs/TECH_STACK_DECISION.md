@@ -110,6 +110,7 @@ KnowledgeBase/
 - P1 基础媒体库直接由 Tauri 后端解析 Markdown 链接目标，按真实相对路径回溯每个附件的被引用文档，并在前端提供 `Unlinked` 过滤。
 - P1 媒体清理仅允许删除未被任何 Markdown 引用的附件；后端会再次校验引用状态和路径边界，并在删除后清理空目录。
 - 媒体排序和预览交互保留在前端完成，避免为纯展示逻辑增加额外索引或后端状态。
+- 同步冲突解决沿用现有 `resolve_sync_conflict` Tauri 命令，由前端负责展示冲突列表和逐项决策，不额外引入新的同步状态机。
 - 文档移动到 notebook 时，需要同步维护正文中的相对附件路径。
 - 历史测试库可能仍存在 `inbox / projects / topics` 等旧目录；当前 Tauri 后端在加载知识库时迁移其中的 markdown 文件：
   - `inbox` 迁移为未归档 `notes/note/`
