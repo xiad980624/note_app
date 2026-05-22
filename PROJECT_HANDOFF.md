@@ -162,6 +162,7 @@ Implemented and working at a meaningful first pass:
 - command palette
 - command palette backed by local full-text search
 - search filters for document type, notebook, and tag
+- real graph view backed by note/tag/wikilink relationships
 - sync entry and first-pass sync workflow
 - notebook creation
 - notebook assignment UI
@@ -202,7 +203,7 @@ Remaining validation:
 
 P1:
 1. improve search ranking/highlighting and saved filters
-2. continue graph/media work
+2. continue graph polish and media work
 3. improve sync conflict UX
 4. move credentials into safer storage
 

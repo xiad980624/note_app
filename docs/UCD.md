@@ -125,6 +125,7 @@ flowchart TD
 | EditorTitle | 独立标题输入 | Markdown 标题回写 |
 | EditorBody | 正文编辑 | Markdown-first |
 | RelationPanel | Backlinks / Outgoing / Tags | 标签页式切换 |
+| GraphView | 真实 note/tag/wikilink 关系图 | 轻量 2D 邻居网络，节点可跳转 |
 | NotebookMenu | 归档到 notebook | 面板式，而非粗糙右键菜单 |
 | CommandPalette | 全局搜索与动作 | `Cmd/Ctrl + K`，支持全文搜索与类型 / notebook / tag 过滤 |
 | SyncEntry | 顶部同步状态入口 | 图标态 |

@@ -205,6 +205,35 @@ struct SearchLibraryResult {
     score: usize,
 }
 
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct KnowledgeGraphNode {
+    id: String,
+    title: String,
+    kind: String,
+    document_type: Option<String>,
+    notebook: Option<String>,
+    relative_path: Option<String>,
+    tags: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct KnowledgeGraphEdge {
+    id: String,
+    source: String,
+    target: String,
+    kind: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct KnowledgeGraphResponse {
+    nodes: Vec<KnowledgeGraphNode>,
+    edges: Vec<KnowledgeGraphEdge>,
+    message: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ImportAssetPayload {
@@ -2246,6 +2275,94 @@ fn search_library(
 }
 
 #[tauri::command]
+fn load_knowledge_graph(root_path: String) -> Result<KnowledgeGraphResponse, String> {
+    let parsed_notes = load_parsed_notes(&root_path)?;
+    let mut note_index = HashMap::<String, String>::new();
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    let mut seen_edges = HashMap::<String, bool>::new();
+    let mut seen_tags = HashMap::<String, bool>::new();
+
+    for note in &parsed_notes {
+        for key in note_reference_keys(&note.summary) {
+            note_index.insert(key, note.summary.id.clone());
+        }
+
+        nodes.push(KnowledgeGraphNode {
+            id: note.summary.id.clone(),
+            title: note.summary.title.clone(),
+            kind: "note".to_string(),
+            document_type: Some(note.summary.document_type.clone()),
+            notebook: note.summary.notebook.clone(),
+            relative_path: Some(note.summary.relative_path.clone()),
+            tags: note.summary.tags.clone(),
+        });
+    }
+
+    for note in &parsed_notes {
+        for raw_link in extract_wikilinks(&note.body) {
+            let canonical = canonicalize_link_target(&raw_link);
+            let Some(target_note_id) = note_index.get(&canonical) else {
+                continue;
+            };
+            if target_note_id == &note.summary.id {
+                continue;
+            }
+
+            let edge_id = format!("wikilink:{}->{}", note.summary.id, target_note_id);
+            if seen_edges.insert(edge_id.clone(), true).is_none() {
+                edges.push(KnowledgeGraphEdge {
+                    id: edge_id,
+                    source: note.summary.id.clone(),
+                    target: target_note_id.clone(),
+                    kind: "wikilink".to_string(),
+                });
+            }
+        }
+
+        for tag in &note.summary.tags {
+            let normalized_tag = tag.trim();
+            if normalized_tag.is_empty() {
+                continue;
+            }
+
+            let tag_id = format!("tag:{}", normalized_tag.to_lowercase());
+            if seen_tags.insert(tag_id.clone(), true).is_none() {
+                nodes.push(KnowledgeGraphNode {
+                    id: tag_id.clone(),
+                    title: normalized_tag.to_string(),
+                    kind: "tag".to_string(),
+                    document_type: None,
+                    notebook: None,
+                    relative_path: None,
+                    tags: Vec::new(),
+                });
+            }
+
+            let edge_id = format!("tag:{}->{}", note.summary.id, tag_id);
+            if seen_edges.insert(edge_id.clone(), true).is_none() {
+                edges.push(KnowledgeGraphEdge {
+                    id: edge_id,
+                    source: note.summary.id.clone(),
+                    target: tag_id,
+                    kind: "tag".to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(KnowledgeGraphResponse {
+        message: format!(
+            "Knowledge graph ready with {} nodes and {} edges.",
+            nodes.len(),
+            edges.len()
+        ),
+        nodes,
+        edges,
+    })
+}
+
+#[tauri::command]
 fn list_migration_log(root_path: String) -> Result<Vec<LegacyMigrationLogEntry>, String> {
     let layout = ensure_library_layout(&root_path)?;
     load_migration_log_from_layout(&layout)
@@ -3254,6 +3371,7 @@ pub fn run() {
             inspect_library,
             load_library_index,
             search_library,
+            load_knowledge_graph,
             list_migration_log,
             create_note,
             load_note_document,
