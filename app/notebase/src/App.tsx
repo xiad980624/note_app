@@ -167,6 +167,7 @@ type KnowledgeGraphResponse = {
 
 type WorkspaceView = 'notes' | 'graph' | 'media'
 type MediaFilter = 'all' | 'image' | 'pdf' | 'video' | 'file' | 'unlinked'
+type MediaSort = 'newest' | 'oldest' | 'name' | 'largest'
 type SettingsTab = 'general' | 'sync'
 
 type MediaAssetRecord = {
@@ -310,6 +311,20 @@ const formatFileSize = (sizeBytes: number) => {
   }
 
   return `${sizeBytes} B`
+}
+
+const mediaSortLabel = (sort: MediaSort) => {
+  switch (sort) {
+    case 'oldest':
+      return 'Oldest'
+    case 'name':
+      return 'Name'
+    case 'largest':
+      return 'Largest'
+    case 'newest':
+    default:
+      return 'Newest'
+  }
 }
 
 const loadStoredSyncConfig = (): SyncConfig | null => {
@@ -1237,6 +1252,7 @@ function App() {
   const [mediaAssets, setMediaAssets] = useState<MediaAssetRecord[]>([])
   const [selectedMediaAssetId, setSelectedMediaAssetId] = useState<string | null>(null)
   const [mediaActionBusy, setMediaActionBusy] = useState(false)
+  const [mediaSort, setMediaSort] = useState<MediaSort>('newest')
 
   const runningInTauri = useMemo(() => isTauriRuntime(), [])
   const hasUnsavedChanges = selectedNoteDocument
@@ -1317,6 +1333,27 @@ function App() {
       return asset.kind === mediaFilter
     })
   }, [mediaAssets, mediaFilter])
+  const sortedMediaAssets = useMemo(() => {
+    const assets = [...filteredMediaAssets]
+
+    assets.sort((left, right) => {
+      if (mediaSort === 'oldest') {
+        return (left.updatedAtMs ?? 0) - (right.updatedAtMs ?? 0) || left.fileName.localeCompare(right.fileName)
+      }
+
+      if (mediaSort === 'name') {
+        return left.fileName.localeCompare(right.fileName) || (right.updatedAtMs ?? 0) - (left.updatedAtMs ?? 0)
+      }
+
+      if (mediaSort === 'largest') {
+        return right.sizeBytes - left.sizeBytes || left.fileName.localeCompare(right.fileName)
+      }
+
+      return (right.updatedAtMs ?? 0) - (left.updatedAtMs ?? 0) || left.fileName.localeCompare(right.fileName)
+    })
+
+    return assets
+  }, [filteredMediaAssets, mediaSort])
   const wikilinkSuggestions = useMemo(() => {
     if (!wikilinkDraft || editorViewMode !== 'markdown' || workspaceView !== 'notes') {
       return []
@@ -4367,8 +4404,17 @@ function App() {
                     ))}
                   </div>
                   <div className="media-toolbar-meta">
-                    <span>{filteredMediaAssets.length} items</span>
+                    <span>{sortedMediaAssets.length} items</span>
                     <span>{unlinkedMediaAssets.length} unlinked</span>
+                    <label className="media-sort-control">
+                      <span>Sort</span>
+                      <select value={mediaSort} onChange={(event) => setMediaSort(event.target.value as MediaSort)}>
+                        <option value="newest">{mediaSortLabel('newest')}</option>
+                        <option value="oldest">{mediaSortLabel('oldest')}</option>
+                        <option value="name">{mediaSortLabel('name')}</option>
+                        <option value="largest">{mediaSortLabel('largest')}</option>
+                      </select>
+                    </label>
                     <button
                       type="button"
                       className="ghost-action"
@@ -4376,9 +4422,6 @@ function App() {
                       onClick={() => void refreshMediaAssets(localRootPath)}
                     >
                       Refresh
-                    </button>
-                    <button type="button" className="ghost-action" disabled>
-                      Sort by Date
                     </button>
                     <button
                       type="button"
@@ -4392,8 +4435,8 @@ function App() {
                 </div>
 
                 <div className="media-grid">
-                  {filteredMediaAssets.length > 0 ? (
-                    filteredMediaAssets.map((asset) => (
+                  {sortedMediaAssets.length > 0 ? (
+                    sortedMediaAssets.map((asset) => (
                       <button
                         key={asset.id}
                         type="button"
@@ -4438,6 +4481,29 @@ function App() {
                         src={convertFileSrc(selectedMediaAsset.absolutePath)}
                         alt={selectedMediaAsset.fileName}
                       />
+                    ) : selectedMediaAsset.kind === 'video' ? (
+                      <video
+                        className="media-sidebar-preview"
+                        src={convertFileSrc(selectedMediaAsset.absolutePath)}
+                        controls
+                        preload="metadata"
+                      />
+                    ) : selectedMediaAsset.kind === 'pdf' ? (
+                      <iframe
+                        className="media-sidebar-preview media-sidebar-preview-document"
+                        src={convertFileSrc(selectedMediaAsset.absolutePath)}
+                        title={selectedMediaAsset.fileName}
+                      />
+                    ) : selectedMediaAsset.kind === 'audio' ? (
+                      <div className="media-audio-preview">
+                        <div className="media-sidebar-preview media-sidebar-preview-placeholder">AUDIO</div>
+                        <audio
+                          className="media-audio-player"
+                          src={convertFileSrc(selectedMediaAsset.absolutePath)}
+                          controls
+                          preload="metadata"
+                        />
+                      </div>
                     ) : (
                       <div className="media-sidebar-preview media-sidebar-preview-placeholder">
                         {selectedMediaAsset.kind.toUpperCase()}

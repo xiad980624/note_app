@@ -166,6 +166,7 @@ Implemented and working at a meaningful first pass:
 - media library linked-note backtracking based on real markdown asset paths
 - media library `Unlinked` filter for orphan attachment review
 - media library safe delete flow for unlinked assets only
+- media library sorting and richer sidebar previews for image/video/pdf/audio
 - sync entry and first-pass sync workflow
 - notebook creation
 - notebook assignment UI
@@ -199,6 +200,8 @@ Implemented and working at a meaningful first pass:
 - the media library can distinguish linked vs unlinked assets
 - unlinked assets are surfaced explicitly so cleanup work can happen later
 - unlinked assets can now be deleted from the media view, while linked assets stay protected
+- media assets can be sorted by newest, oldest, name, or size
+- sidebar preview now supports image, video, pdf, and audio without leaving the workspace
 
 ## 8. P0 status
 
@@ -212,7 +215,7 @@ Remaining validation:
 
 P1:
 1. improve search ranking/highlighting and saved filters
-2. continue graph polish and media library batch operations / previews
+2. continue graph polish and media library batch operations / bulk selection
 3. improve sync conflict UX
 4. move credentials into safer storage
 

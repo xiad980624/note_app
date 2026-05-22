@@ -2746,6 +2746,25 @@
   font-size: 0.78rem;
 }
 
+.media-sort-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+}
+
+.media-sort-control select {
+  height: 28px;
+  border: 1px solid rgba(193, 198, 215, 0.4);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.9);
+  color: rgba(39, 45, 58, 0.82);
+  font: inherit;
+  font-size: 0.74rem;
+  padding: 0 8px;
+}
+
 .media-filter-chip {
   padding: 8px 12px;
   border: 0;
@@ -2835,6 +2854,20 @@
 .media-sidebar-preview {
   aspect-ratio: 4 / 3;
   background: #f4f3f8;
+}
+
+.media-sidebar-preview-document {
+  border: 0;
+  min-height: 320px;
+}
+
+.media-audio-preview {
+  display: grid;
+  gap: 10px;
+}
+
+.media-audio-player {
+  width: 100%;
 }
 
 .media-meta-grid {
