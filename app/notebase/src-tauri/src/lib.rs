@@ -281,6 +281,21 @@ struct MediaAssetRecord {
     linked_notes: Vec<NoteLinkReference>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteLibraryAssetPayload {
+    root_path: String,
+    relative_asset_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteLibraryAssetResponse {
+    deleted_relative_paths: Vec<String>,
+    deleted_count: usize,
+    message: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OpenPathResponse {
@@ -1086,6 +1101,56 @@ fn resolve_asset_target_from_note(
         .strip_prefix(root_path)
         .ok()
         .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+}
+
+fn resolve_asset_path_from_relative(
+    root_path: &Path,
+    assets_root: &Path,
+    relative_asset_path: &str,
+) -> Result<PathBuf, String> {
+    let candidate = normalize_path_lexically(&root_path.join(relative_asset_path));
+
+    if !candidate.starts_with(assets_root) {
+        return Err(format!(
+            "Asset path escapes the library assets directory: {relative_asset_path}"
+        ));
+    }
+
+    Ok(candidate)
+}
+
+fn prune_empty_asset_directories(start_directory: &Path, assets_root: &Path) -> Result<(), String> {
+    let mut current = start_directory.to_path_buf();
+
+    while current.starts_with(assets_root) && current != assets_root {
+        let is_empty = fs::read_dir(&current)
+            .map_err(|error| {
+                format!(
+                    "Failed to inspect asset directory {}: {error}",
+                    current.display()
+                )
+            })?
+            .next()
+            .is_none();
+
+        if !is_empty {
+            break;
+        }
+
+        fs::remove_dir(&current).map_err(|error| {
+            format!(
+                "Failed to remove empty asset directory {}: {error}",
+                current.display()
+            )
+        })?;
+
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        current = parent.to_path_buf();
+    }
+
+    Ok(())
 }
 
 fn extract_frontmatter_value(frontmatter: &str, key: &str) -> Option<String> {
@@ -3188,6 +3253,62 @@ fn list_library_assets(root_path: String) -> Result<Vec<MediaAssetRecord>, Strin
 }
 
 #[tauri::command]
+fn delete_library_asset(
+    payload: DeleteLibraryAssetPayload,
+) -> Result<DeleteLibraryAssetResponse, String> {
+    let layout = ensure_library_layout(&payload.root_path)?;
+    let assets = list_library_assets(layout.root_path.clone())?;
+    let asset = assets
+        .into_iter()
+        .find(|record| record.relative_asset_path == payload.relative_asset_path)
+        .ok_or_else(|| {
+            format!(
+                "Could not find asset {} in the current library.",
+                payload.relative_asset_path
+            )
+        })?;
+
+    if !asset.linked_notes.is_empty() {
+        return Err(format!(
+            "Cannot delete {} because it is still linked from {} note(s).",
+            asset.relative_asset_path,
+            asset.linked_notes.len()
+        ));
+    }
+
+    let assets_root = PathBuf::from(&layout.assets_root);
+    let asset_absolute_path = resolve_asset_path_from_relative(
+        &PathBuf::from(&layout.root_path),
+        &assets_root,
+        &asset.relative_asset_path,
+    )?;
+
+    if !asset_absolute_path.exists() {
+        return Err(format!(
+            "The asset does not exist anymore: {}",
+            asset_absolute_path.display()
+        ));
+    }
+
+    fs::remove_file(&asset_absolute_path).map_err(|error| {
+        format!(
+            "Failed to delete asset {}: {error}",
+            asset_absolute_path.display()
+        )
+    })?;
+
+    if let Some(parent_directory) = asset_absolute_path.parent() {
+        prune_empty_asset_directories(parent_directory, &assets_root)?;
+    }
+
+    Ok(DeleteLibraryAssetResponse {
+        deleted_relative_paths: vec![asset.relative_asset_path.clone()],
+        deleted_count: 1,
+        message: format!("Deleted unlinked asset {}.", asset.file_name),
+    })
+}
+
+#[tauri::command]
 fn open_local_path(path: String) -> Result<OpenPathResponse, String> {
     let target_path = PathBuf::from(&path);
     if !target_path.exists() {
@@ -3459,6 +3580,7 @@ pub fn run() {
             import_asset,
             inspect_note_connections,
             list_library_assets,
+            delete_library_asset,
             open_local_path,
             reveal_local_path,
             prepare_sync,

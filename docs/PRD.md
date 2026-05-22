@@ -158,6 +158,7 @@ KnowledgeBase/
 - 首版编辑器以 Markdown-first 为准，后续富文本能力也必须回写为 Markdown。
 - 图片与附件不内嵌为主存储，独立放在 `assets/images/` 与 `assets/files/`。
 - 媒体库需要展示每个附件被哪些文档引用，并能识别当前未被任何文档引用的附件。
+- 未引用附件支持在媒体库中直接删除；已被文档引用的附件在 P1 阶段不提供删除入口，避免误删正文依赖资源。
 - `.notebase/` 保存索引、缓存和 App 元数据，可重建，不作为真实内容源。
 - 不同格式内容通过索引关系、相对路径引用和笔记元数据进行关联。
 - 未归类文档按 `documentType` 存放在主类型目录下，例如 `notes/note/`、`notes/todo/`、`notes/journal/`。

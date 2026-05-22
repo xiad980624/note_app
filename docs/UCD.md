@@ -126,7 +126,7 @@ flowchart TD
 | EditorBody | 正文编辑 | Markdown-first |
 | RelationPanel | Backlinks / Outgoing / Tags | 标签页式切换 |
 | GraphView | 真实 note/tag/wikilink 关系图 | 轻量 2D 邻居网络，节点可跳转 |
-| MediaLibrary | 附件浏览与反查 | 展示 linked notes，并支持 `Unlinked` 过滤 |
+| MediaLibrary | 附件浏览与反查 | 展示 linked notes，支持 `Unlinked` 过滤，并允许删除未引用附件 |
 | NotebookMenu | 归档到 notebook | 面板式，而非粗糙右键菜单 |
 | CommandPalette | 全局搜索与动作 | `Cmd/Ctrl + K`，支持全文搜索与类型 / notebook / tag 过滤 |
 | SyncEntry | 顶部同步状态入口 | 图标态 |
