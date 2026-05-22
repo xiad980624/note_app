@@ -170,6 +170,7 @@ Implemented and working at a meaningful first pass:
 - sync settings now surface conflict summaries and per-file keep-local / keep-remote actions
 - command palette search now highlights hits and remembers the last filters
 - command palette ranking now favors strong title matches and recently edited notes
+- media library now supports batch selection and bulk cleanup for selected unlinked assets
 - sync entry and first-pass sync workflow
 - notebook creation
 - notebook assignment UI
@@ -220,7 +221,7 @@ Remaining validation:
 
 P1:
 1. continue search relevance tuning beyond the current title/recency weighting
-2. continue graph polish and media library batch operations / bulk selection
+2. continue graph polish and media library batch actions beyond the current selection/delete flow
 3. improve sync conflict UX beyond the current per-file resolution list
 4. move credentials into safer storage
 

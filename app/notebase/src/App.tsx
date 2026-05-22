@@ -1317,6 +1317,8 @@ function App() {
   const [selectedMediaAssetId, setSelectedMediaAssetId] = useState<string | null>(null)
   const [mediaActionBusy, setMediaActionBusy] = useState(false)
   const [mediaSort, setMediaSort] = useState<MediaSort>('newest')
+  const [mediaSelectionMode, setMediaSelectionMode] = useState(false)
+  const [selectedMediaAssetIds, setSelectedMediaAssetIds] = useState<string[]>([])
 
   const runningInTauri = useMemo(() => isTauriRuntime(), [])
   const hasUnsavedChanges = selectedNoteDocument
@@ -1377,9 +1379,17 @@ function App() {
     : null
   const selectedMediaAsset =
     mediaAssets.find((asset) => asset.id === selectedMediaAssetId) ?? mediaAssets[0] ?? null
+  const selectedMediaAssets = useMemo(
+    () => mediaAssets.filter((asset) => selectedMediaAssetIds.includes(asset.id)),
+    [mediaAssets, selectedMediaAssetIds],
+  )
   const unlinkedMediaAssets = useMemo(
     () => mediaAssets.filter((asset) => asset.linkedNotes.length === 0),
     [mediaAssets],
+  )
+  const selectedUnlinkedMediaAssets = useMemo(
+    () => selectedMediaAssets.filter((asset) => asset.linkedNotes.length === 0),
+    [selectedMediaAssets],
   )
   const filteredMediaAssets = useMemo(() => {
     if (mediaFilter === 'all') {
@@ -2396,6 +2406,97 @@ function App() {
       setMediaActionBusy(false)
     }
   }, [localRootPath, refreshLocalWorkspace, refreshMediaAssets, runningInTauri, unlinkedMediaAssets])
+
+  const handleDeleteSelectedMediaAssets = useCallback(async () => {
+    if (!runningInTauri) {
+      setSaveStatus('error')
+      setSaveMessage('Deleting local assets requires the Tauri desktop runtime.')
+      return
+    }
+
+    if (!localRootPath) {
+      setSaveStatus('error')
+      setSaveMessage('The offline knowledge base path is still loading.')
+      return
+    }
+
+    if (selectedUnlinkedMediaAssets.length === 0) {
+      setSaveStatus('saved')
+      setSaveMessage('Select one or more unlinked assets to delete.')
+      return
+    }
+
+    const confirmed = window.confirm(
+      `Delete ${selectedUnlinkedMediaAssets.length} selected unlinked asset${selectedUnlinkedMediaAssets.length === 1 ? '' : 's'}? This cannot be undone.`,
+    )
+    if (!confirmed) {
+      return
+    }
+
+    setMediaActionBusy(true)
+    let deletedCount = 0
+
+    try {
+      for (const asset of selectedUnlinkedMediaAssets) {
+        await invokeWithTimeout<DeleteLibraryAssetResponse>('delete_library_asset', {
+          payload: {
+            rootPath: localRootPath,
+            relativeAssetPath: asset.relativeAssetPath,
+          },
+        })
+        deletedCount += 1
+      }
+
+      await refreshLocalWorkspace(localRootPath)
+      await refreshMediaAssets(localRootPath)
+      setSelectedMediaAssetIds([])
+      setMediaSelectionMode(false)
+      setSaveStatus('saved')
+      setSaveMessage(
+        `Deleted ${deletedCount} selected unlinked asset${deletedCount === 1 ? '' : 's'} from the offline library.`,
+      )
+    } catch (error) {
+      setSaveStatus('error')
+      setSaveMessage(
+        error instanceof Error
+          ? error.message
+          : `Stopped after deleting ${deletedCount} selected unlinked asset${deletedCount === 1 ? '' : 's'}.`,
+      )
+      await refreshLocalWorkspace(localRootPath)
+      await refreshMediaAssets(localRootPath)
+    } finally {
+      setMediaActionBusy(false)
+    }
+  }, [localRootPath, refreshLocalWorkspace, refreshMediaAssets, runningInTauri, selectedUnlinkedMediaAssets])
+
+  const handleToggleMediaSelectionMode = useCallback(() => {
+    setMediaSelectionMode((current) => {
+      if (current) {
+        setSelectedMediaAssetIds([])
+      }
+      return !current
+    })
+  }, [])
+
+  const handleSelectAllVisibleMediaAssets = useCallback(() => {
+    setSelectedMediaAssetIds(sortedMediaAssets.map((asset) => asset.id))
+  }, [sortedMediaAssets])
+
+  const handleClearMediaSelection = useCallback(() => {
+    setSelectedMediaAssetIds([])
+  }, [])
+
+  const handleMediaCardClick = useCallback((assetId: string) => {
+    setSelectedMediaAssetId(assetId)
+
+    if (!mediaSelectionMode) {
+      return
+    }
+
+    setSelectedMediaAssetIds((current) =>
+      current.includes(assetId) ? current.filter((id) => id !== assetId) : [...current, assetId],
+    )
+  }, [mediaSelectionMode])
 
   const handleInsertCodeWithLanguage = useCallback(
     (language: string) => {
@@ -4526,6 +4627,9 @@ function App() {
                   <div className="media-toolbar-meta">
                     <span>{sortedMediaAssets.length} items</span>
                     <span>{unlinkedMediaAssets.length} unlinked</span>
+                    {mediaSelectionMode ? (
+                      <span>{selectedMediaAssetIds.length} selected</span>
+                    ) : null}
                     <label className="media-sort-control">
                       <span>Sort</span>
                       <select value={mediaSort} onChange={(event) => setMediaSort(event.target.value as MediaSort)}>
@@ -4545,6 +4649,44 @@ function App() {
                     </button>
                     <button
                       type="button"
+                      className="ghost-action"
+                      disabled={mediaActionBusy || sortedMediaAssets.length === 0}
+                      onClick={handleToggleMediaSelectionMode}
+                    >
+                      {mediaSelectionMode ? 'Done Selecting' : 'Select'}
+                    </button>
+                    {mediaSelectionMode ? (
+                      <>
+                        <button
+                          type="button"
+                          className="ghost-action"
+                          disabled={mediaActionBusy || sortedMediaAssets.length === 0}
+                          onClick={handleSelectAllVisibleMediaAssets}
+                        >
+                          Select Visible
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-action"
+                          disabled={mediaActionBusy || selectedMediaAssetIds.length === 0}
+                          onClick={handleClearMediaSelection}
+                        >
+                          Clear
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-danger"
+                          disabled={mediaActionBusy || selectedUnlinkedMediaAssets.length === 0}
+                          onClick={() => void handleDeleteSelectedMediaAssets()}
+                        >
+                          {mediaActionBusy
+                            ? 'Deleting…'
+                            : `Delete Selected Unlinked (${selectedUnlinkedMediaAssets.length})`}
+                        </button>
+                      </>
+                    ) : null}
+                    <button
+                      type="button"
                       className="ghost-danger"
                       disabled={mediaActionBusy || unlinkedMediaAssets.length === 0}
                       onClick={() => void handleDeleteAllUnlinkedAssets()}
@@ -4560,9 +4702,14 @@ function App() {
                       <button
                         key={asset.id}
                         type="button"
-                        className={`media-card ${selectedMediaAsset?.id === asset.id ? 'active' : ''}`}
-                        onClick={() => setSelectedMediaAssetId(asset.id)}
+                        className={`media-card ${selectedMediaAsset?.id === asset.id ? 'active' : ''} ${selectedMediaAssetIds.includes(asset.id) ? 'media-card-selected' : ''}`}
+                        onClick={() => handleMediaCardClick(asset.id)}
                       >
+                        {mediaSelectionMode ? (
+                          <span className={`media-card-check ${selectedMediaAssetIds.includes(asset.id) ? 'checked' : ''}`}>
+                            {selectedMediaAssetIds.includes(asset.id) ? '✓' : ''}
+                          </span>
+                        ) : null}
                         {asset.kind === 'image' ? (
                           <img className="media-card-thumb" src={convertFileSrc(asset.absolutePath)} alt={asset.fileName} />
                         ) : (
