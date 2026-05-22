@@ -142,6 +142,29 @@ type SearchLibraryResult = {
   score: number
 }
 
+type KnowledgeGraphNode = {
+  id: string
+  title: string
+  kind: 'note' | 'tag'
+  documentType: DocumentType | null
+  notebook: string | null
+  relativePath: string | null
+  tags: string[]
+}
+
+type KnowledgeGraphEdge = {
+  id: string
+  source: string
+  target: string
+  kind: 'wikilink' | 'tag'
+}
+
+type KnowledgeGraphResponse = {
+  nodes: KnowledgeGraphNode[]
+  edges: KnowledgeGraphEdge[]
+  message: string
+}
+
 type WorkspaceView = 'notes' | 'graph' | 'media'
 type MediaFilter = 'all' | 'image' | 'pdf' | 'video' | 'file'
 type SettingsTab = 'general' | 'sync'
@@ -1199,6 +1222,12 @@ function App() {
     unresolvedLinks: [],
     message: 'Select a note to inspect links.',
   })
+  const [knowledgeGraph, setKnowledgeGraph] = useState<KnowledgeGraphResponse>({
+    nodes: [],
+    edges: [],
+    message: 'Open Graph to build the local note graph.',
+  })
+  const [graphBusy, setGraphBusy] = useState(false)
   const [mediaAssets, setMediaAssets] = useState<MediaAssetRecord[]>([])
   const [selectedMediaAssetId, setSelectedMediaAssetId] = useState<string | null>(null)
 
@@ -1307,6 +1336,65 @@ function App() {
     : !runningInTauri
       ? 'Link inspection requires the Tauri desktop runtime.'
       : noteConnections.message
+  const graphViewport = useMemo(() => {
+    const selectedNodeId = selectedNoteId ?? knowledgeGraph.nodes.find((node) => node.kind === 'note')?.id ?? null
+    const visibleNodeIds = new Set<string>()
+
+    if (selectedNodeId) {
+      visibleNodeIds.add(selectedNodeId)
+      for (const edge of knowledgeGraph.edges) {
+        if (edge.source === selectedNodeId) {
+          visibleNodeIds.add(edge.target)
+        }
+        if (edge.target === selectedNodeId) {
+          visibleNodeIds.add(edge.source)
+        }
+      }
+    }
+
+    if (visibleNodeIds.size <= 1) {
+      for (const node of knowledgeGraph.nodes) {
+        if (visibleNodeIds.size >= 36) {
+          break
+        }
+        visibleNodeIds.add(node.id)
+      }
+    }
+
+    const visibleNodes = knowledgeGraph.nodes.filter((node) => visibleNodeIds.has(node.id)).slice(0, 36)
+    const visibleIdSet = new Set(visibleNodes.map((node) => node.id))
+    const visibleEdges = knowledgeGraph.edges.filter(
+      (edge) => visibleIdSet.has(edge.source) && visibleIdSet.has(edge.target),
+    )
+    const centerNode = selectedNodeId ? visibleNodes.find((node) => node.id === selectedNodeId) ?? null : null
+    const orbitNodes = visibleNodes.filter((node) => node.id !== centerNode?.id)
+    const layout = new Map<string, { x: number; y: number }>()
+
+    if (centerNode) {
+      layout.set(centerNode.id, { x: 50, y: 50 })
+    }
+
+    const radius = orbitNodes.length > 12 ? 36 : 30
+    orbitNodes.forEach((node, index) => {
+      const angle = (Math.PI * 2 * index) / Math.max(orbitNodes.length, 1) - Math.PI / 2
+      layout.set(node.id, {
+        x: 50 + Math.cos(angle) * radius,
+        y: 50 + Math.sin(angle) * radius,
+      })
+    })
+
+    if (!centerNode) {
+      visibleNodes.forEach((node, index) => {
+        const angle = (Math.PI * 2 * index) / Math.max(visibleNodes.length, 1) - Math.PI / 2
+        layout.set(node.id, {
+          x: 50 + Math.cos(angle) * 34,
+          y: 50 + Math.sin(angle) * 34,
+        })
+      })
+    }
+
+    return { nodes: visibleNodes, edges: visibleEdges, layout, centerNode }
+  }, [knowledgeGraph, selectedNoteId])
   const noteMenuTarget =
     noteMenuState
       ? knowledgeBaseIndex.notes.find((note) => note.id === noteMenuState.noteId) ?? null
@@ -1611,6 +1699,39 @@ function App() {
       cancelled = true
     }
   }, [localRootPath, runningInTauri, selectedNoteId])
+
+  useEffect(() => {
+    if (workspaceView !== 'graph' || !runningInTauri || !localRootPath) {
+      return
+    }
+
+    let cancelled = false
+    setGraphBusy(true)
+    void invokeWithTimeout<KnowledgeGraphResponse>('load_knowledge_graph', { rootPath: localRootPath })
+      .then((response) => {
+        if (!cancelled) {
+          setKnowledgeGraph(response)
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setKnowledgeGraph({
+            nodes: [],
+            edges: [],
+            message: error instanceof Error ? error.message : 'Failed to build the knowledge graph.',
+          })
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setGraphBusy(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [localRootPath, runningInTauri, workspaceView])
 
   useEffect(() => {
     syncRichTextEditorFromMarkdown(editorBody)
@@ -3993,48 +4114,62 @@ function App() {
             <section className="graph-workspace">
               <div className="graph-canvas">
                 <div className="graph-scene" style={{ transform: `scale(${graphZoom})` }}>
-                  <div className="graph-orbit orbit-large" />
-                  <div className="graph-orbit orbit-small" />
-                  <button
-                    type="button"
-                    className="graph-node graph-node-center"
-                    onClick={() => navigateToView('notes')}
-                  >
-                    N
-                  </button>
-                  <button
-                    type="button"
-                    className="graph-node graph-node-blue"
-                    onClick={() => navigateToView('notes')}
-                  >
-                    {Math.max(noteConnections.outgoingLinks.length, 1)}
-                  </button>
-                  <button
-                    type="button"
-                    className="graph-node graph-node-violet"
-                    onClick={() => navigateToView('notes')}
-                  >
-                    {Math.max(noteConnections.backlinks.length, 1)}
-                  </button>
-                  <button
-                    type="button"
-                    className="graph-node graph-node-orange"
-                    onClick={() => navigateToView('notes')}
-                  >
-                    {Math.max(selectedNoteTags.length, 1)}
-                  </button>
-                  <button
-                    type="button"
-                    className="graph-node graph-node-slate"
-                    onClick={() => navigateToView('notes')}
-                  >
-                    {Math.max(noteConnections.unresolvedLinks.length, 1)}
-                  </button>
+                  <svg className="graph-edge-layer" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                    {graphViewport.edges.map((edge) => {
+                      const source = graphViewport.layout.get(edge.source)
+                      const target = graphViewport.layout.get(edge.target)
+                      if (!source || !target) {
+                        return null
+                      }
 
-                  <div className="graph-link graph-link-a" />
-                  <div className="graph-link graph-link-b" />
-                  <div className="graph-link graph-link-c" />
-                  <div className="graph-link graph-link-d" />
+                      return (
+                        <line
+                          key={edge.id}
+                          className={`graph-edge graph-edge-${edge.kind}`}
+                          x1={source.x}
+                          y1={source.y}
+                          x2={target.x}
+                          y2={target.y}
+                        />
+                      )
+                    })}
+                  </svg>
+                  {graphViewport.nodes.length > 0 ? (
+                    graphViewport.nodes.map((node) => {
+                      const position = graphViewport.layout.get(node.id) ?? { x: 50, y: 50 }
+                      const isActive = node.id === selectedNoteId
+                      return (
+                        <button
+                          key={node.id}
+                          type="button"
+                          className={`graph-node graph-node-${node.kind} ${isActive ? 'graph-node-active' : ''}`}
+                          style={{ left: `${position.x}%`, top: `${position.y}%` }}
+                          title={node.relativePath ?? `#${node.title}`}
+                          onClick={() => {
+                            if (node.kind === 'note') {
+                              setSelectedNoteId(node.id)
+                              navigateToView('notes')
+                            } else {
+                              setCommandPaletteTagFilter(node.title)
+                              openCommandPalette()
+                            }
+                          }}
+                        >
+                          <strong>{node.kind === 'tag' ? `#${node.title}` : node.title}</strong>
+                          <span>
+                            {node.kind === 'tag'
+                              ? 'tag'
+                              : node.notebook ?? documentTypeMeta.find((item) => item.key === node.documentType)?.label ?? 'note'}
+                          </span>
+                        </button>
+                      )
+                    })
+                  ) : (
+                    <div className="graph-empty-state">
+                      <strong>{graphBusy ? 'Building graph...' : 'No graph data yet'}</strong>
+                      <span>{knowledgeGraph.message}</span>
+                    </div>
+                  )}
                 </div>
 
                 <div className="graph-floating-controls">
@@ -4059,32 +4194,32 @@ function App() {
 
                 <div className="graph-filter-card">
                   <div className="section-heading">
-                    <strong>Graph Filters</strong>
+                    <strong>Knowledge Graph</strong>
                     <button type="button" className="ghost-action" onClick={() => navigateToView('notes')}>
                       Notes
                     </button>
                   </div>
                   <div className="graph-filter-row">
                     <span className="graph-filter-dot blue" />
-                    <span>Outgoing links</span>
-                    <strong>{noteConnections.outgoingLinks.length}</strong>
+                    <span>Note nodes</span>
+                    <strong>{knowledgeGraph.nodes.filter((node) => node.kind === 'note').length}</strong>
                   </div>
                   <div className="graph-filter-row">
                     <span className="graph-filter-dot violet" />
-                    <span>Backlinks</span>
-                    <strong>{noteConnections.backlinks.length}</strong>
+                    <span>Wikilinks</span>
+                    <strong>{knowledgeGraph.edges.filter((edge) => edge.kind === 'wikilink').length}</strong>
                   </div>
                   <div className="graph-filter-row">
                     <span className="graph-filter-dot orange" />
                     <span>Tags</span>
-                    <strong>{selectedNoteTags.length}</strong>
+                    <strong>{knowledgeGraph.nodes.filter((node) => node.kind === 'tag').length}</strong>
                   </div>
                 </div>
               </div>
               <div className="graph-status-bar">
-                <span>ACTIVE NODES: {1 + noteConnections.outgoingLinks.length + noteConnections.backlinks.length}</span>
-                <span>CONNECTIONS: {noteConnections.outgoingLinks.length + noteConnections.backlinks.length}</span>
-                <span className="graph-status-live">LIVE GRAPH SYNC: OK</span>
+                <span>VISIBLE NODES: {graphViewport.nodes.length}</span>
+                <span>VISIBLE LINKS: {graphViewport.edges.length}</span>
+                <span className="graph-status-live">{graphBusy ? 'BUILDING GRAPH' : knowledgeGraph.message}</span>
               </div>
             </section>
           ) : (

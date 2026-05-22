@@ -106,6 +106,7 @@ KnowledgeBase/
 - `.notebase/index.db` 保存搜索索引、关系索引和缓存信息。
 - 用户真实数据以文件为准，数据库可重建。
 - P1 基础搜索直接读取 Markdown 文件并在 Tauri 后端打分返回；后续数据量变大后再落入 `.notebase/index.db` 或专用全文索引。
+- P1 基础图谱直接由 Tauri 后端解析 `[[wikilink]]` 和 frontmatter tags，前端用轻量 2D 布局渲染当前笔记邻居网络。
 - 文档移动到 notebook 时，需要同步维护正文中的相对附件路径。
 - 历史测试库可能仍存在 `inbox / projects / topics` 等旧目录；当前 Tauri 后端在加载知识库时迁移其中的 markdown 文件：
   - `inbox` 迁移为未归档 `notes/note/`
@@ -144,4 +145,4 @@ KnowledgeBase/
 - Electron：先不选，原因是更重，首版没有必要。
 - 直接做 React Native iPhone 客户端：先不选，原因是核心难点在桌面端编辑器和知识库模型。
 - App 内直接连接 SMB/WebDAV：先不选，原因是会显著增加首版复杂度。
-- 一开始做图谱：先不选，原因是展示成本高，但对 MVP 价值不如检索和双链直接。
+- 图谱先做轻量邻居网络，不引入复杂图布局库；等数据量和交互需求明确后再评估专用图谱引擎。
