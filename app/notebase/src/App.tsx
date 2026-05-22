@@ -375,7 +375,7 @@ const splitEditableNoteContent = (rawBody: string, fallbackTitle = DEFAULT_NOTE_
   }
 
   const title = titleMatch[1].trim() || fallbackTitle
-  let body = normalizedBody.slice(titleMatch[0].length).replace(/^\n+/, '')
+  let body = stripLeadingTitleHeadings(normalizedBody.slice(titleMatch[0].length), title)
   if (title === DEFAULT_NOTE_TITLE && body.trim() === 'Start writing...') {
     body = ''
   }
@@ -383,9 +383,28 @@ const splitEditableNoteContent = (rawBody: string, fallbackTitle = DEFAULT_NOTE_
   return { title, body }
 }
 
+const stripLeadingTitleHeadings = (body: string, title: string) => {
+  let nextBody = body.replace(/\r\n/g, '\n').replace(/^\n+/, '')
+  const normalizedTitle = title.trim().toLowerCase()
+  if (!normalizedTitle) {
+    return nextBody
+  }
+
+  while (true) {
+    const match = nextBody.match(/^#\s+(.+?)(?:\n|$)/)
+    if (!match || match[1].trim().toLowerCase() !== normalizedTitle) {
+      break
+    }
+
+    nextBody = nextBody.slice(match[0].length).replace(/^\n+/, '')
+  }
+
+  return nextBody
+}
+
 const composeEditableNoteContent = (title: string, body: string) => {
   const normalizedTitle = title.trim() || DEFAULT_NOTE_TITLE
-  const normalizedBody = body.replace(/\r\n/g, '\n').replace(/^\n+/, '')
+  const normalizedBody = stripLeadingTitleHeadings(body, normalizedTitle)
 
   if (!normalizedBody) {
     return `# ${normalizedTitle}`
