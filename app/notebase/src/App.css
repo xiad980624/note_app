@@ -2663,6 +2663,45 @@
   background: rgba(255, 255, 255, 0.94);
 }
 
+.graph-mode-row {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.graph-mode-chip {
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: #f4f3f8;
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.graph-mode-chip.active {
+  background: rgba(29, 111, 242, 0.1);
+  color: #0058bc;
+}
+
+.graph-search-field input {
+  width: 100%;
+  height: 34px;
+  border: 1px solid rgba(193, 198, 215, 0.4);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--ink-strong);
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0 10px;
+}
+
+.graph-search-field input:focus {
+  outline: none;
+  border-color: rgba(29, 111, 242, 0.32);
+}
+
 .graph-filter-row {
   display: grid;
   grid-template-columns: auto 1fr auto;

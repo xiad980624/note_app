@@ -171,6 +171,7 @@ type KnowledgeGraphResponse = {
 type WorkspaceView = 'notes' | 'graph' | 'media'
 type MediaFilter = 'all' | 'image' | 'pdf' | 'video' | 'file' | 'unlinked'
 type MediaSort = 'newest' | 'oldest' | 'name' | 'largest'
+type GraphScope = 'focused' | 'full'
 type SettingsTab = 'general' | 'sync'
 
 type MediaAssetRecord = {
@@ -1313,6 +1314,8 @@ function App() {
     message: 'Open Graph to build the local note graph.',
   })
   const [graphBusy, setGraphBusy] = useState(false)
+  const [graphScope, setGraphScope] = useState<GraphScope>('focused')
+  const [graphQuery, setGraphQuery] = useState('')
   const [mediaAssets, setMediaAssets] = useState<MediaAssetRecord[]>([])
   const [selectedMediaAssetId, setSelectedMediaAssetId] = useState<string | null>(null)
   const [mediaActionBusy, setMediaActionBusy] = useState(false)
@@ -1461,11 +1464,35 @@ function App() {
     : !runningInTauri
       ? 'Link inspection requires the Tauri desktop runtime.'
       : noteConnections.message
+  const graphQueryLower = graphQuery.trim().toLowerCase()
   const graphViewport = useMemo(() => {
-    const selectedNodeId = selectedNoteId ?? knowledgeGraph.nodes.find((node) => node.kind === 'note')?.id ?? null
+    const matchedNodeIds = new Set(
+      knowledgeGraph.nodes
+        .filter((node) => {
+          if (!graphQueryLower) {
+            return true
+          }
+          const haystacks = [
+            node.title,
+            node.relativePath ?? '',
+            node.notebook ?? '',
+            node.documentType ?? '',
+            node.tags.join(' '),
+          ]
+          return haystacks.some((value) => value.toLowerCase().includes(graphQueryLower))
+        })
+        .map((node) => node.id),
+    )
+    const fallbackNodeId = graphQueryLower
+      ? knowledgeGraph.nodes.find((node) => matchedNodeIds.has(node.id))?.id ?? null
+      : knowledgeGraph.nodes.find((node) => node.kind === 'note')?.id ?? null
+    const selectedNodeId =
+      selectedNoteId && (!graphQueryLower || matchedNodeIds.has(selectedNoteId))
+        ? selectedNoteId
+        : fallbackNodeId
     const visibleNodeIds = new Set<string>()
 
-    if (selectedNodeId) {
+    if (graphScope === 'focused' && selectedNodeId) {
       visibleNodeIds.add(selectedNodeId)
       for (const edge of knowledgeGraph.edges) {
         if (edge.source === selectedNodeId) {
@@ -1477,16 +1504,21 @@ function App() {
       }
     }
 
-    if (visibleNodeIds.size <= 1) {
+    if (graphScope === 'full' || visibleNodeIds.size <= 1) {
       for (const node of knowledgeGraph.nodes) {
-        if (visibleNodeIds.size >= 36) {
+        if (!matchedNodeIds.has(node.id)) {
+          continue
+        }
+        if (visibleNodeIds.size >= (graphScope === 'full' ? 48 : 36)) {
           break
         }
         visibleNodeIds.add(node.id)
       }
     }
 
-    const visibleNodes = knowledgeGraph.nodes.filter((node) => visibleNodeIds.has(node.id)).slice(0, 36)
+    const visibleNodes = knowledgeGraph.nodes
+      .filter((node) => visibleNodeIds.has(node.id) && matchedNodeIds.has(node.id))
+      .slice(0, graphScope === 'full' ? 48 : 36)
     const visibleIdSet = new Set(visibleNodes.map((node) => node.id))
     const visibleEdges = knowledgeGraph.edges.filter(
       (edge) => visibleIdSet.has(edge.source) && visibleIdSet.has(edge.target),
@@ -1519,7 +1551,7 @@ function App() {
     }
 
     return { nodes: visibleNodes, edges: visibleEdges, layout, centerNode }
-  }, [knowledgeGraph, selectedNoteId])
+  }, [graphQueryLower, graphScope, knowledgeGraph, selectedNoteId])
   const noteMenuTarget =
     noteMenuState
       ? knowledgeBaseIndex.notes.find((note) => note.id === noteMenuState.noteId) ?? null
@@ -4578,6 +4610,29 @@ function App() {
                       Notes
                     </button>
                   </div>
+                  <div className="graph-mode-row">
+                    <button
+                      type="button"
+                      className={`graph-mode-chip ${graphScope === 'focused' ? 'active' : ''}`}
+                      onClick={() => setGraphScope('focused')}
+                    >
+                      Focused
+                    </button>
+                    <button
+                      type="button"
+                      className={`graph-mode-chip ${graphScope === 'full' ? 'active' : ''}`}
+                      onClick={() => setGraphScope('full')}
+                    >
+                      Full
+                    </button>
+                  </div>
+                  <label className="graph-search-field">
+                    <input
+                      value={graphQuery}
+                      onChange={(event) => setGraphQuery(event.target.value)}
+                      placeholder="Find note or tag"
+                    />
+                  </label>
                   <div className="graph-filter-row">
                     <span className="graph-filter-dot blue" />
                     <span>Note nodes</span>
