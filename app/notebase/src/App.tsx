@@ -166,7 +166,7 @@ type KnowledgeGraphResponse = {
 }
 
 type WorkspaceView = 'notes' | 'graph' | 'media'
-type MediaFilter = 'all' | 'image' | 'pdf' | 'video' | 'file'
+type MediaFilter = 'all' | 'image' | 'pdf' | 'video' | 'file' | 'unlinked'
 type SettingsTab = 'general' | 'sync'
 
 type MediaAssetRecord = {
@@ -1296,6 +1296,9 @@ function App() {
     }
 
     return mediaAssets.filter((asset) => {
+      if (mediaFilter === 'unlinked') {
+        return asset.linkedNotes.length === 0
+      }
       if (mediaFilter === 'file') {
         return !['image', 'pdf', 'video'].includes(asset.kind)
       }
@@ -4233,6 +4236,7 @@ function App() {
                       ['pdf', 'PDFs'],
                       ['video', 'Videos'],
                       ['file', 'Files'],
+                      ['unlinked', 'Unlinked'],
                     ].map(([filterKey, label]) => (
                       <button
                         key={filterKey}
@@ -4246,6 +4250,7 @@ function App() {
                   </div>
                   <div className="media-toolbar-meta">
                     <span>{filteredMediaAssets.length} items</span>
+                    <span>{mediaAssets.filter((asset) => asset.linkedNotes.length === 0).length} unlinked</span>
                     <button type="button" className="ghost-action" onClick={() => void refreshMediaAssets(localRootPath)}>
                       Refresh
                     </button>
@@ -4271,6 +4276,7 @@ function App() {
                         )}
                         <strong>{asset.fileName}</strong>
                         <span>{`${formatFileSize(asset.sizeBytes)} • ${formatRelativeDate(asset.updatedAtMs)}`}</span>
+                        <span>{asset.linkedNotes.length > 0 ? `${asset.linkedNotes.length} linked note${asset.linkedNotes.length === 1 ? '' : 's'}` : 'Unlinked asset'}</span>
                       </button>
                     ))
                   ) : (
@@ -4316,6 +4322,12 @@ function App() {
                       <strong>{formatRelativeDate(selectedMediaAsset.updatedAtMs)}</strong>
                       <span>PATH</span>
                       <strong>{selectedMediaAsset.relativeAssetPath}</strong>
+                      <span>STATUS</span>
+                      <strong>
+                        {selectedMediaAsset.linkedNotes.length > 0
+                          ? `${selectedMediaAsset.linkedNotes.length} linked note${selectedMediaAsset.linkedNotes.length === 1 ? '' : 's'}`
+                          : 'Unlinked'}
+                      </strong>
                     </div>
                     <div className="media-linked-notes">
                       <p className="section-label">Linked notes</p>

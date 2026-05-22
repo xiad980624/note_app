@@ -2790,6 +2790,11 @@
   line-height: 1.4;
 }
 
+.media-card span:last-child {
+  color: rgba(163, 63, 63, 0.88);
+  font-weight: 600;
+}
+
 .media-card-thumb,
 .media-card-placeholder,
 .media-sidebar-preview {
