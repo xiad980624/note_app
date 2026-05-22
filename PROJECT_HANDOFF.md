@@ -176,6 +176,7 @@ Implemented and working at a meaningful first pass:
 - current stable writing path is markdown-first
 - title is edited separately from body
 - save composes title + body back into markdown
+- duplicate leading `# title` headings are stripped from the body so the title bar is the single source of truth
 - preview renders from the composed markdown
 - new notes focus the title when they still use the default title
 
