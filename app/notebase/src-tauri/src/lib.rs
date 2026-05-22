@@ -1296,6 +1296,35 @@ fn search_snippet(body: &str, query: &str) -> String {
     snippet
 }
 
+fn count_occurrences(haystack: &str, needle: &str) -> usize {
+    if needle.is_empty() {
+        return 0;
+    }
+
+    haystack.match_indices(needle).count()
+}
+
+fn recency_score(updated_at_ms: Option<u64>) -> usize {
+    let Some(updated_at_ms) = updated_at_ms else {
+        return 0;
+    };
+    let Ok(now_ms) = current_timestamp_ms() else {
+        return 0;
+    };
+    let age_ms = now_ms.saturating_sub(updated_at_ms);
+    let day_ms = 24 * 60 * 60 * 1000;
+
+    if age_ms <= day_ms {
+        12
+    } else if age_ms <= day_ms * 7 {
+        8
+    } else if age_ms <= day_ms * 30 {
+        4
+    } else {
+        0
+    }
+}
+
 fn asset_kind_from_path(path: &Path) -> String {
     let extension = path
         .extension()
@@ -2346,36 +2375,45 @@ fn search_library(
         let mut match_kind = "recent".to_string();
 
         if query.is_empty() {
-            score = 1;
+            score = 1 + recency_score(parsed_note.summary.updated_at_ms);
         } else {
+            if title == query {
+                score += 140;
+                match_kind = "title".to_string();
+            } else if title.starts_with(&query) {
+                score += 95;
+                match_kind = "title".to_string();
+            }
             if title.contains(&query) {
-                score += 70;
+                score += 70 + count_occurrences(&title, &query).min(3) * 8;
                 match_kind = "title".to_string();
             }
             if tags.contains(&query) {
-                score += 55;
+                score += 55 + count_occurrences(&tags, &query).min(4) * 5;
                 if match_kind == "recent" {
                     match_kind = "tag".to_string();
                 }
             }
             if relative_path.contains(&query) {
-                score += 35;
+                score += 35 + count_occurrences(&relative_path, &query).min(3) * 4;
                 if match_kind == "recent" {
                     match_kind = "path".to_string();
                 }
             }
             if summary.contains(&query) {
-                score += 25;
+                score += 25 + count_occurrences(&summary, &query).min(3) * 3;
                 if match_kind == "recent" {
                     match_kind = "summary".to_string();
                 }
             }
             if body.contains(&query) {
-                score += 15;
+                score += 15 + count_occurrences(&body, &query).min(6) * 2;
                 if match_kind == "recent" {
                     match_kind = "body".to_string();
                 }
             }
+
+            score += recency_score(parsed_note.summary.updated_at_ms);
 
             if score == 0 {
                 continue;

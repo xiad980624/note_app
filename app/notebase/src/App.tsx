@@ -518,6 +518,23 @@ const documentTypeMeta: Array<{ key: DocumentType; label: string; createLabel: s
 const documentTypeLabel = (documentType: DocumentType) =>
   documentTypeMeta.find((item) => item.key === documentType)?.label ?? 'Notes'
 
+const searchMatchKindLabel = (matchKind: string) => {
+  switch (matchKind) {
+    case 'title':
+      return 'Title match'
+    case 'tag':
+      return 'Tag match'
+    case 'path':
+      return 'Path match'
+    case 'summary':
+      return 'Summary match'
+    case 'body':
+      return 'Body match'
+    default:
+      return 'Recent note'
+  }
+}
+
 const navItems = [
   { key: 'notes', label: 'Notes', shortLabel: 'Notes', icon: 'notes' },
   { key: 'graph', label: 'Graph', shortLabel: 'Graph', icon: 'graph' },
@@ -3358,7 +3375,7 @@ function App() {
           group: 'search_results' as const,
           title: result.note.title,
           subtitle: result.snippet,
-          meta: `${result.matchKind} • ${documentTypeLabel(result.note.documentType)}${result.note.notebook ? ` • ${result.note.notebook}` : ''}`,
+          meta: `${searchMatchKindLabel(result.matchKind)} • ${documentTypeLabel(result.note.documentType)}${result.note.notebook ? ` • ${result.note.notebook}` : ''}`,
           run: () => {
             handleSelectNote(result.note.id)
             closeCommandPalette()
