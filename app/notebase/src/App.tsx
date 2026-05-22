@@ -22,6 +22,9 @@ declare global {
 const SYNC_CONFIG_KEY = 'notebase:sync-config'
 const SELECTED_NOTE_KEY = 'notebase:selected-note-id'
 const NOTEBOOKS_KEY = 'notebase:notebooks'
+const COMMAND_PALETTE_DOCUMENT_FILTER_KEY = 'notebase:command-palette-document-filter'
+const COMMAND_PALETTE_NOTEBOOK_FILTER_KEY = 'notebase:command-palette-notebook-filter'
+const COMMAND_PALETTE_TAG_FILTER_KEY = 'notebase:command-palette-tag-filter'
 const INVOKE_TIMEOUT_MS = 12000
 const MIN_SAVE_SPINNER_MS = 450
 const BROWSER_LOCAL_PATH_PLACEHOLDER = '~/Documents/NoteBase'
@@ -313,6 +316,28 @@ const formatFileSize = (sizeBytes: number) => {
   return `${sizeBytes} B`
 }
 
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+const renderHighlightedText = (text: string, query: string) => {
+  const normalizedQuery = query.trim()
+  if (!normalizedQuery) {
+    return text
+  }
+
+  const matcher = new RegExp(`(${escapeRegExp(normalizedQuery)})`, 'ig')
+  const parts = text.split(matcher)
+
+  return parts.map((part, index) =>
+    part.toLowerCase() === normalizedQuery.toLowerCase() ? (
+      <mark key={`${part}-${index}`} className="command-palette-highlight">
+        {part}
+      </mark>
+    ) : (
+      <Fragment key={`${part}-${index}`}>{part}</Fragment>
+    ),
+  )
+}
+
 const mediaSortLabel = (sort: MediaSort) => {
   switch (sort) {
     case 'oldest':
@@ -325,6 +350,15 @@ const mediaSortLabel = (sort: MediaSort) => {
     default:
       return 'Newest'
   }
+}
+
+const loadStoredCommandPaletteFilter = (key: string, fallback = 'all') => {
+  if (typeof window === 'undefined') {
+    return fallback
+  }
+
+  const value = window.localStorage.getItem(key)?.trim()
+  return value ? value : fallback
 }
 
 const loadStoredSyncConfig = (): SyncConfig | null => {
@@ -480,6 +514,9 @@ const documentTypeMeta: Array<{ key: DocumentType; label: string; createLabel: s
   { key: 'note', label: 'Notes', createLabel: 'New Note', icon: 'notes' },
   { key: 'journal', label: 'Journal', createLabel: 'New Journal', icon: 'today' },
 ]
+
+const documentTypeLabel = (documentType: DocumentType) =>
+  documentTypeMeta.find((item) => item.key === documentType)?.label ?? 'Notes'
 
 const navItems = [
   { key: 'notes', label: 'Notes', shortLabel: 'Notes', icon: 'notes' },
@@ -1226,9 +1263,18 @@ function App() {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [commandPaletteQuery, setCommandPaletteQuery] = useState('')
   const [commandPaletteIndex, setCommandPaletteIndex] = useState(0)
-  const [commandPaletteDocumentTypeFilter, setCommandPaletteDocumentTypeFilter] = useState<DocumentType | 'all'>('all')
-  const [commandPaletteNotebookFilter, setCommandPaletteNotebookFilter] = useState('all')
-  const [commandPaletteTagFilter, setCommandPaletteTagFilter] = useState('all')
+  const [commandPaletteDocumentTypeFilter, setCommandPaletteDocumentTypeFilter] = useState<DocumentType | 'all'>(
+    () => {
+      const value = loadStoredCommandPaletteFilter(COMMAND_PALETTE_DOCUMENT_FILTER_KEY)
+      return value === 'todo' || value === 'note' || value === 'journal' ? value : 'all'
+    },
+  )
+  const [commandPaletteNotebookFilter, setCommandPaletteNotebookFilter] = useState(() =>
+    loadStoredCommandPaletteFilter(COMMAND_PALETTE_NOTEBOOK_FILTER_KEY),
+  )
+  const [commandPaletteTagFilter, setCommandPaletteTagFilter] = useState(() =>
+    loadStoredCommandPaletteFilter(COMMAND_PALETTE_TAG_FILTER_KEY),
+  )
   const [searchResults, setSearchResults] = useState<SearchLibraryResult[]>([])
   const [searchBusy, setSearchBusy] = useState(false)
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false)
@@ -1490,6 +1536,18 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem(NOTEBOOKS_KEY, JSON.stringify(storedNotebooks))
   }, [storedNotebooks])
+
+  useEffect(() => {
+    window.localStorage.setItem(COMMAND_PALETTE_DOCUMENT_FILTER_KEY, commandPaletteDocumentTypeFilter)
+  }, [commandPaletteDocumentTypeFilter])
+
+  useEffect(() => {
+    window.localStorage.setItem(COMMAND_PALETTE_NOTEBOOK_FILTER_KEY, commandPaletteNotebookFilter)
+  }, [commandPaletteNotebookFilter])
+
+  useEffect(() => {
+    window.localStorage.setItem(COMMAND_PALETTE_TAG_FILTER_KEY, commandPaletteTagFilter)
+  }, [commandPaletteTagFilter])
 
   const refreshLocalWorkspace = useCallback(async (rootPath: string) => {
     if (!runningInTauri) {
@@ -3300,7 +3358,7 @@ function App() {
           group: 'search_results' as const,
           title: result.note.title,
           subtitle: result.snippet,
-          meta: result.matchKind,
+          meta: `${result.matchKind} • ${documentTypeLabel(result.note.documentType)}${result.note.notebook ? ` • ${result.note.notebook}` : ''}`,
           run: () => {
             handleSelectNote(result.note.id)
             closeCommandPalette()
@@ -4743,8 +4801,10 @@ function App() {
                               onClick={() => void item.run()}
                             >
                               <div className="command-palette-item-main">
-                                <strong>{item.title}</strong>
-                                {item.subtitle ? <span>{item.subtitle}</span> : null}
+                                <strong>{renderHighlightedText(item.title, commandPaletteQuery)}</strong>
+                                {item.subtitle ? (
+                                  <span>{renderHighlightedText(item.subtitle, commandPaletteQuery)}</span>
+                                ) : null}
                               </div>
                               <div className="command-palette-item-meta">
                                 {item.meta ? <span>{item.meta}</span> : null}

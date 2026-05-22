@@ -168,6 +168,7 @@ Implemented and working at a meaningful first pass:
 - media library safe delete flow for unlinked assets only
 - media library sorting and richer sidebar previews for image/video/pdf/audio
 - sync settings now surface conflict summaries and per-file keep-local / keep-remote actions
+- command palette search now highlights hits and remembers the last filters
 - sync entry and first-pass sync workflow
 - notebook creation
 - notebook assignment UI
@@ -217,7 +218,7 @@ Remaining validation:
 ## 9. Recommended next work
 
 P1:
-1. improve search ranking/highlighting and saved filters
+1. improve search ranking beyond the current highlighting and saved filters
 2. continue graph polish and media library batch operations / bulk selection
 3. improve sync conflict UX beyond the current per-file resolution list
 4. move credentials into safer storage

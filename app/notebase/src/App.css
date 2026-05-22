@@ -2384,6 +2384,13 @@
   font-weight: 500;
 }
 
+.command-palette-highlight {
+  padding: 0 2px;
+  border-radius: 4px;
+  background: rgba(29, 111, 242, 0.12);
+  color: #0d56b4;
+}
+
 .command-palette-item-main span,
 .command-palette-item-meta span,
 .command-palette-footnote {
@@ -2394,6 +2401,8 @@
 
 .command-palette-item-meta {
   flex-shrink: 0;
+  display: grid;
+  justify-items: end;
 }
 
 .command-palette-footer {
