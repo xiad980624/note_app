@@ -12,11 +12,11 @@ App root:
 - `/Users/xd/llm_develop/note_app/app/notebase`
 
 Current active branch:
-- `feature/search-and-links`
+- `feature/p1-media-library`
 
 Latest committed HEAD on this branch:
-- `9a6f3bd`
-- `fix: refine notebook tree interactions`
+- `3d1a58c`
+- `feat: render real knowledge graph`
 
 Primary product docs:
 - [PRD.md](/Users/xd/llm_develop/note_app/docs/PRD.md)
@@ -163,6 +163,8 @@ Implemented and working at a meaningful first pass:
 - command palette backed by local full-text search
 - search filters for document type, notebook, and tag
 - real graph view backed by note/tag/wikilink relationships
+- media library linked-note backtracking based on real markdown asset paths
+- media library `Unlinked` filter for orphan attachment review
 - sync entry and first-pass sync workflow
 - notebook creation
 - notebook assignment UI
@@ -191,6 +193,11 @@ Implemented and working at a meaningful first pass:
 - sync is optional
 - sync configuration is behind the sync entry, not in the editor workflow
 
+### Media
+- asset linkage is resolved from real markdown link targets, not filename substring matching
+- the media library can distinguish linked vs unlinked assets
+- unlinked assets are surfaced explicitly so cleanup work can happen later
+
 ## 8. P0 status
 
 P0 is intended to be closed after this branch is verified in the running Tauri desktop app.
@@ -203,7 +210,7 @@ Remaining validation:
 
 P1:
 1. improve search ranking/highlighting and saved filters
-2. continue graph polish and media work
+2. continue graph polish and media library actions
 3. improve sync conflict UX
 4. move credentials into safer storage
 

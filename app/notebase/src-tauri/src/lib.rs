@@ -1027,6 +1027,67 @@ fn rewrite_markdown_relative_paths(
     rewritten
 }
 
+fn normalize_path_lexically(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(value) => normalized.push(value),
+            Component::RootDir | Component::Prefix(_) => normalized.push(component.as_os_str()),
+        }
+    }
+
+    normalized
+}
+
+fn extract_markdown_link_targets(body: &str) -> Vec<String> {
+    let mut targets = Vec::new();
+    let mut cursor = 0;
+
+    while let Some(relative_start) = body[cursor..].find("](") {
+        let target_start = cursor + relative_start + 2;
+        let Some(relative_end) = body[target_start..].find(')') else {
+            break;
+        };
+        let target_end = target_start + relative_end;
+        let target = body[target_start..target_end].trim();
+        if !target.is_empty() {
+            targets.push(target.to_string());
+        }
+        cursor = target_end + 1;
+    }
+
+    targets
+}
+
+fn resolve_asset_target_from_note(
+    root_path: &Path,
+    note_relative_path: &str,
+    target: &str,
+) -> Option<String> {
+    let trimmed_target = target.trim();
+    if is_external_link_target(trimmed_target) {
+        return None;
+    }
+
+    let unwrapped_target = trimmed_target
+        .strip_prefix('<')
+        .and_then(|value| value.strip_suffix('>'))
+        .unwrap_or(trimmed_target);
+    let note_absolute_path = root_path.join("notes").join(note_relative_path);
+    let note_directory = note_absolute_path.parent()?;
+    let resolved_target = normalize_path_lexically(&note_directory.join(unwrapped_target));
+
+    resolved_target
+        .strip_prefix(root_path)
+        .ok()
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+}
+
 fn extract_frontmatter_value(frontmatter: &str, key: &str) -> Option<String> {
     let prefix = format!("{key}:");
     let lines: Vec<&str> = frontmatter.lines().collect();
@@ -3077,16 +3138,29 @@ fn list_library_assets(root_path: String) -> Result<Vec<MediaAssetRecord>, Strin
             .and_then(|name| name.to_str())
             .unwrap_or("asset")
             .to_string();
-
         let linked_notes = parsed_notes
             .iter()
-            .filter(|record| {
-                record.body.contains(&file_name) || record.body.contains(&relative_asset_path)
-            })
-            .map(|record| NoteLinkReference {
-                title: record.summary.title.clone(),
-                note_id: record.summary.id.clone(),
-                relative_path: record.summary.relative_path.clone(),
+            .filter_map(|record| {
+                let matches_asset = extract_markdown_link_targets(&record.body)
+                    .into_iter()
+                    .filter_map(|target| {
+                        resolve_asset_target_from_note(
+                            &root_path,
+                            &record.summary.relative_path,
+                            &target,
+                        )
+                    })
+                    .any(|resolved_target| resolved_target == relative_asset_path);
+
+                if !matches_asset {
+                    return None;
+                }
+
+                Some(NoteLinkReference {
+                    title: record.summary.title.clone(),
+                    note_id: record.summary.id.clone(),
+                    relative_path: record.summary.relative_path.clone(),
+                })
             })
             .collect();
 
