@@ -2464,6 +2464,11 @@
   cursor: pointer;
 }
 
+.ghost-danger:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
 .sync-choice-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

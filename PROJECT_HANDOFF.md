@@ -12,11 +12,11 @@ App root:
 - `/Users/xd/llm_develop/note_app/app/notebase`
 
 Current active branch:
-- `feature/p1-media-library`
+- `feature/p1-media-cleanup`
 
 Latest committed HEAD on this branch:
-- `3d1a58c`
-- `feat: render real knowledge graph`
+- `f428eb5`
+- `feat: improve media asset linkage`
 
 Primary product docs:
 - [PRD.md](/Users/xd/llm_develop/note_app/docs/PRD.md)
@@ -165,6 +165,7 @@ Implemented and working at a meaningful first pass:
 - real graph view backed by note/tag/wikilink relationships
 - media library linked-note backtracking based on real markdown asset paths
 - media library `Unlinked` filter for orphan attachment review
+- media library safe delete flow for unlinked assets only
 - sync entry and first-pass sync workflow
 - notebook creation
 - notebook assignment UI
@@ -197,6 +198,7 @@ Implemented and working at a meaningful first pass:
 - asset linkage is resolved from real markdown link targets, not filename substring matching
 - the media library can distinguish linked vs unlinked assets
 - unlinked assets are surfaced explicitly so cleanup work can happen later
+- unlinked assets can now be deleted from the media view, while linked assets stay protected
 
 ## 8. P0 status
 
@@ -210,7 +212,7 @@ Remaining validation:
 
 P1:
 1. improve search ranking/highlighting and saved filters
-2. continue graph polish and media library actions
+2. continue graph polish and media library batch operations / previews
 3. improve sync conflict UX
 4. move credentials into safer storage
 

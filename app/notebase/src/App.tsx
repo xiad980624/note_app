@@ -180,6 +180,12 @@ type MediaAssetRecord = {
   linkedNotes: NoteLinkReference[]
 }
 
+type DeleteLibraryAssetResponse = {
+  deletedRelativePaths: string[]
+  deletedCount: number
+  message: string
+}
+
 type WikilinkDraft = {
   query: string
   start: number
@@ -1230,6 +1236,7 @@ function App() {
   const [graphBusy, setGraphBusy] = useState(false)
   const [mediaAssets, setMediaAssets] = useState<MediaAssetRecord[]>([])
   const [selectedMediaAssetId, setSelectedMediaAssetId] = useState<string | null>(null)
+  const [mediaActionBusy, setMediaActionBusy] = useState(false)
 
   const runningInTauri = useMemo(() => isTauriRuntime(), [])
   const hasUnsavedChanges = selectedNoteDocument
@@ -1290,6 +1297,10 @@ function App() {
     : null
   const selectedMediaAsset =
     mediaAssets.find((asset) => asset.id === selectedMediaAssetId) ?? mediaAssets[0] ?? null
+  const unlinkedMediaAssets = useMemo(
+    () => mediaAssets.filter((asset) => asset.linkedNotes.length === 0),
+    [mediaAssets],
+  )
   const filteredMediaAssets = useMemo(() => {
     if (mediaFilter === 'all') {
       return mediaAssets
@@ -2165,6 +2176,113 @@ function App() {
       )
     }
   }
+
+  const handleDeleteMediaAsset = useCallback(
+    async (asset: MediaAssetRecord) => {
+      if (!runningInTauri) {
+        setSaveStatus('error')
+        setSaveMessage('Deleting local assets requires the Tauri desktop runtime.')
+        return
+      }
+
+      if (!localRootPath) {
+        setSaveStatus('error')
+        setSaveMessage('The offline knowledge base path is still loading.')
+        return
+      }
+
+      if (asset.linkedNotes.length > 0) {
+        setSaveStatus('error')
+        setSaveMessage('Only unlinked assets can be deleted from the media library right now.')
+        return
+      }
+
+      const confirmed = window.confirm(`Delete unlinked asset ${asset.fileName}? This cannot be undone.`)
+      if (!confirmed) {
+        return
+      }
+
+      setMediaActionBusy(true)
+      try {
+        const response = await invokeWithTimeout<DeleteLibraryAssetResponse>('delete_library_asset', {
+          payload: {
+            rootPath: localRootPath,
+            relativeAssetPath: asset.relativeAssetPath,
+          },
+        })
+        await refreshLocalWorkspace(localRootPath)
+        await refreshMediaAssets(localRootPath)
+        setSaveStatus('saved')
+        setSaveMessage(response.message)
+      } catch (error) {
+        setSaveStatus('error')
+        setSaveMessage(error instanceof Error ? error.message : 'Failed to delete the selected asset.')
+      } finally {
+        setMediaActionBusy(false)
+      }
+    },
+    [localRootPath, refreshLocalWorkspace, refreshMediaAssets, runningInTauri],
+  )
+
+  const handleDeleteAllUnlinkedAssets = useCallback(async () => {
+    if (!runningInTauri) {
+      setSaveStatus('error')
+      setSaveMessage('Deleting local assets requires the Tauri desktop runtime.')
+      return
+    }
+
+    if (!localRootPath) {
+      setSaveStatus('error')
+      setSaveMessage('The offline knowledge base path is still loading.')
+      return
+    }
+
+    if (unlinkedMediaAssets.length === 0) {
+      setSaveStatus('saved')
+      setSaveMessage('There are no unlinked assets to delete.')
+      return
+    }
+
+    const confirmed = window.confirm(
+      `Delete ${unlinkedMediaAssets.length} unlinked asset${unlinkedMediaAssets.length === 1 ? '' : 's'}? This cannot be undone.`,
+    )
+    if (!confirmed) {
+      return
+    }
+
+    setMediaActionBusy(true)
+    let deletedCount = 0
+
+    try {
+      for (const asset of unlinkedMediaAssets) {
+        await invokeWithTimeout<DeleteLibraryAssetResponse>('delete_library_asset', {
+          payload: {
+            rootPath: localRootPath,
+            relativeAssetPath: asset.relativeAssetPath,
+          },
+        })
+        deletedCount += 1
+      }
+
+      await refreshLocalWorkspace(localRootPath)
+      await refreshMediaAssets(localRootPath)
+      setSaveStatus('saved')
+      setSaveMessage(
+        `Deleted ${deletedCount} unlinked asset${deletedCount === 1 ? '' : 's'} from the offline library.`,
+      )
+    } catch (error) {
+      setSaveStatus('error')
+      setSaveMessage(
+        error instanceof Error
+          ? error.message
+          : `Stopped after deleting ${deletedCount} unlinked asset${deletedCount === 1 ? '' : 's'}.`,
+      )
+      await refreshLocalWorkspace(localRootPath)
+      await refreshMediaAssets(localRootPath)
+    } finally {
+      setMediaActionBusy(false)
+    }
+  }, [localRootPath, refreshLocalWorkspace, refreshMediaAssets, runningInTauri, unlinkedMediaAssets])
 
   const handleInsertCodeWithLanguage = useCallback(
     (language: string) => {
@@ -4250,12 +4368,25 @@ function App() {
                   </div>
                   <div className="media-toolbar-meta">
                     <span>{filteredMediaAssets.length} items</span>
-                    <span>{mediaAssets.filter((asset) => asset.linkedNotes.length === 0).length} unlinked</span>
-                    <button type="button" className="ghost-action" onClick={() => void refreshMediaAssets(localRootPath)}>
+                    <span>{unlinkedMediaAssets.length} unlinked</span>
+                    <button
+                      type="button"
+                      className="ghost-action"
+                      disabled={mediaActionBusy}
+                      onClick={() => void refreshMediaAssets(localRootPath)}
+                    >
                       Refresh
                     </button>
-                    <button type="button" className="ghost-action">
+                    <button type="button" className="ghost-action" disabled>
                       Sort by Date
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost-danger"
+                      disabled={mediaActionBusy || unlinkedMediaAssets.length === 0}
+                      onClick={() => void handleDeleteAllUnlinkedAssets()}
+                    >
+                      {mediaActionBusy ? 'Cleaning…' : `Delete Unlinked (${unlinkedMediaAssets.length})`}
                     </button>
                   </div>
                 </div>
@@ -4354,16 +4485,26 @@ function App() {
                       <button
                         type="button"
                         className="ghost-action media-side-action"
+                        disabled={mediaActionBusy}
                         onClick={() => void handleOpenLocalPath(selectedMediaAsset.absolutePath, 'reveal')}
                       >
                         Open in Finder
                       </button>
                       <button
                         type="button"
-                        className="ghost-danger media-side-action"
+                        className="ghost-action media-side-action"
+                        disabled={mediaActionBusy}
                         onClick={() => void handleOpenLocalPath(selectedMediaAsset.absolutePath, 'open')}
                       >
                         Open Asset
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-danger media-side-action"
+                        disabled={mediaActionBusy || selectedMediaAsset.linkedNotes.length > 0}
+                        onClick={() => void handleDeleteMediaAsset(selectedMediaAsset)}
+                      >
+                        {mediaActionBusy ? 'Deleting…' : 'Delete Unlinked Asset'}
                       </button>
                     </div>
                   </div>
