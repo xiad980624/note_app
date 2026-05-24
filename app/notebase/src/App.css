@@ -1501,6 +1501,49 @@
   font-size: 0.78rem;
 }
 
+.preview-media-block {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+
+.preview-media-image {
+  width: 100%;
+  max-height: 420px;
+  object-fit: contain;
+  border-radius: 12px;
+  background: #f4f3f8;
+}
+
+.preview-media-block figcaption {
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+}
+
+.preview-file-card {
+  width: 100%;
+  display: grid;
+  gap: 4px;
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(193, 198, 215, 0.24);
+  border-radius: 12px;
+  background: rgba(244, 243, 248, 0.56);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.preview-file-card strong {
+  color: var(--ink-strong);
+}
+
+.preview-file-card span {
+  color: var(--ink-soft);
+  font-size: 0.76rem;
+  word-break: break-word;
+}
+
 .preview-checklist {
   display: grid;
   gap: 10px;

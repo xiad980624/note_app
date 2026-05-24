@@ -178,6 +178,7 @@ Implemented and working at a meaningful first pass:
 - graph view now supports focused/full scope switching and in-graph search
 - graph nodes now select in place and expose a detail card before navigating away
 - sync preferences now live in `.notebase`, include persisted status, and propagate safe deletions
+- editor now supports clipboard asset paste and richer preview rendering for local media
 - sync entry and first-pass sync workflow
 - notebook creation
 - notebook assignment UI

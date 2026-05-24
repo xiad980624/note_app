@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ClipboardEvent,
   type ChangeEvent,
 } from 'react'
 
@@ -34,8 +35,15 @@ type SyncButtonTone = 'idle' | 'warning' | 'active' | 'busy'
 type EditorViewMode = 'markdown' | 'rich-text' | 'preview'
 type MarkdownSnippetKind = 'h1' | 'h2' | 'bold' | 'list' | 'quote' | 'code' | 'link'
 type AssetImportKind = 'image' | 'file'
-type PreviewBlockType = 'h1' | 'h2' | 'paragraph' | 'quote' | 'list' | 'checklist' | 'code'
-type PreviewBlock = { type: PreviewBlockType; content: string; language?: string }
+type PreviewBlockType = 'h1' | 'h2' | 'paragraph' | 'quote' | 'list' | 'checklist' | 'code' | 'image' | 'filelink'
+type PreviewBlock = {
+  type: PreviewBlockType
+  content: string
+  language?: string
+  alt?: string
+  target?: string
+  label?: string
+}
 type SyncConfig = {
   profileName: string
   protocol: 'http' | 'https'
@@ -826,6 +834,44 @@ const detectOpenWikilink = (body: string, cursor: number) => {
   } satisfies WikilinkDraft
 }
 
+const normalizePathParts = (parts: string[]) => {
+  const normalized: string[] = []
+
+  for (const part of parts) {
+    if (!part || part === '.') {
+      continue
+    }
+    if (part === '..') {
+      normalized.pop()
+      continue
+    }
+    normalized.push(part)
+  }
+
+  return normalized
+}
+
+const resolveRelativeAssetFsPath = (rootPath: string, noteRelativePath: string | null, assetTarget: string) => {
+  const trimmedTarget = assetTarget.trim()
+  if (!trimmedTarget) {
+    return ''
+  }
+
+  if (/^[a-z]+:\/\//i.test(trimmedTarget)) {
+    return trimmedTarget
+  }
+
+  const unwrappedTarget =
+    trimmedTarget.startsWith('<') && trimmedTarget.endsWith('>')
+      ? trimmedTarget.slice(1, -1)
+      : trimmedTarget
+
+  const noteParts = normalizePathParts((noteRelativePath ?? '').split('/').slice(0, -1))
+  const targetParts = normalizePathParts(unwrappedTarget.split('/'))
+  const absoluteParts = normalizePathParts(['notes', ...noteParts, ...targetParts])
+  return [rootPath.replace(/\/+$/g, ''), ...absoluteParts].join('/')
+}
+
 const renderPreviewBlocks = (body: string) => {
   const lines = body.replace(/\r\n/g, '\n').split('\n')
   const blocks: PreviewBlock[] = []
@@ -867,6 +913,22 @@ const renderPreviewBlocks = (body: string) => {
 
     if (trimmed.startsWith('> ')) {
       blocks.push({ type: 'quote', content: trimmed.slice(2).trim() })
+      index += 1
+      continue
+    }
+
+    const imageMatch = trimmed.match(/^!\[([^\]]*)\]\(([^)]+)\)$/)
+    if (imageMatch) {
+      const [, alt, target] = imageMatch
+      blocks.push({ type: 'image', content: trimmed, alt, target })
+      index += 1
+      continue
+    }
+
+    const fileLinkMatch = trimmed.match(/^\[([^\]]+)\]\(([^)]+)\)$/)
+    if (fileLinkMatch) {
+      const [, label, target] = fileLinkMatch
+      blocks.push({ type: 'filelink', content: trimmed, label, target })
       index += 1
       continue
     }
@@ -1379,6 +1441,14 @@ function App() {
   const selectedNote = selectedNoteId
     ? knowledgeBaseIndex.notes.find((note) => note.id === selectedNoteId) ?? null
     : null
+  const resolvePreviewAssetFsPath = useCallback(
+    (target: string) => resolveRelativeAssetFsPath(localRootPath || '', selectedNote?.relativePath ?? null, target),
+    [localRootPath, selectedNote?.relativePath],
+  )
+  const resolvePreviewAssetUrl = useCallback(
+    (target: string) => convertFileSrc(resolvePreviewAssetFsPath(target)),
+    [resolvePreviewAssetFsPath],
+  )
   const selectedMediaAsset =
     mediaAssets.find((asset) => asset.id === selectedMediaAssetId) ?? mediaAssets[0] ?? null
   const selectedMediaAssets = useMemo(
@@ -2354,6 +2424,24 @@ function App() {
       syncMarkdownFromRichTextEditor,
     ],
   )
+
+  const handleEditorPaste = useCallback(async (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const clipboardFiles = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === 'file')
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file))
+
+    if (clipboardFiles.length === 0) {
+      return
+    }
+
+    event.preventDefault()
+    pendingSelectionRef.current = {
+      start: event.currentTarget.selectionStart,
+      end: event.currentTarget.selectionEnd,
+    }
+    await importAssetFiles(clipboardFiles)
+  }, [importAssetFiles])
 
   const handleOpenLocalPath = async (path: string, mode: 'open' | 'reveal') => {
     if (!runningInTauri) {
@@ -4291,6 +4379,32 @@ function App() {
                                   </div>
                                 )
                               }
+                              if (block.type === 'image' && block.target) {
+                                return (
+                                  <figure key={`${block.type}-${index}`} className="preview-media-block">
+                                    <img
+                                      className="preview-media-image"
+                                      src={resolvePreviewAssetUrl(block.target)}
+                                      alt={block.alt || 'image'}
+                                    />
+                                    <figcaption>{block.alt || block.target}</figcaption>
+                                  </figure>
+                                )
+                              }
+                              if (block.type === 'filelink' && block.target) {
+                                const target = block.target
+                                return (
+                                  <button
+                                    key={`${block.type}-${index}`}
+                                    type="button"
+                                    className="preview-file-card"
+                                    onClick={() => void handleOpenLocalPath(resolvePreviewAssetFsPath(target), 'open')}
+                                  >
+                                    <strong>{block.label || 'Attachment'}</strong>
+                                    <span>{target}</span>
+                                  </button>
+                                )
+                              }
                               return <p key={`${block.type}-${index}`}>{renderInlinePreview(block.content)}</p>
                             })
                           ) : (
@@ -4313,6 +4427,7 @@ function App() {
                             placeholder="Start writing..."
                             onChange={handleEditorBodyChange}
                             onKeyDown={handleEditorKeyDown}
+                            onPaste={(event) => void handleEditorPaste(event)}
                             onClick={(event) =>
                               syncWikilinkDraft(
                                 event.currentTarget.value,
