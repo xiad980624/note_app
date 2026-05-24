@@ -135,8 +135,42 @@ struct SyncStatusResponse {
     remote_snapshot: Option<LibrarySnapshot>,
     copied_count: usize,
     skipped_count: usize,
+    deleted_count: usize,
     conflict_count: usize,
     conflicts: Vec<String>,
+    last_sync_at_ms: Option<u64>,
+    last_sync_direction: String,
+    last_error_message: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct StoredSyncConfig {
+    profile_name: String,
+    protocol: String,
+    public_host: String,
+    public_port: String,
+    username: String,
+    password: String,
+    remote_path: String,
+    remote_library_path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+struct PersistedSyncState {
+    last_sync_at_ms: Option<u64>,
+    last_sync_direction: String,
+    last_error_message: Option<String>,
+    last_message: String,
+    unresolved_conflicts: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SyncPreferencesResponse {
+    config: Option<StoredSyncConfig>,
+    state: PersistedSyncState,
 }
 
 #[derive(Debug, Deserialize)]
@@ -350,6 +384,8 @@ struct SyncManifest {
 struct SyncProfileManifest {
     last_direction: String,
     updated_at_ms: u64,
+    #[serde(default)]
+    tombstones: HashMap<String, u64>,
     entries: HashMap<String, SyncManifestEntry>,
 }
 
@@ -365,6 +401,7 @@ struct SyncManifestEntry {
 struct SyncExecutionResult {
     copied_count: usize,
     skipped_count: usize,
+    deleted_count: usize,
     conflicts: Vec<String>,
 }
 
@@ -388,6 +425,36 @@ struct ParsedNoteRecord {
 struct RemoteConnection {
     mount_point: String,
     remote_root_path: String,
+}
+
+impl From<&SyncConfigPayload> for StoredSyncConfig {
+    fn from(value: &SyncConfigPayload) -> Self {
+        StoredSyncConfig {
+            profile_name: value.profile_name.clone(),
+            protocol: value.protocol.clone(),
+            public_host: value.public_host.clone(),
+            public_port: value.public_port.clone(),
+            username: value.username.clone(),
+            password: value.password.clone(),
+            remote_path: value.remote_path.clone(),
+            remote_library_path: value.remote_library_path.clone(),
+        }
+    }
+}
+
+impl From<StoredSyncConfig> for SyncConfigPayload {
+    fn from(value: StoredSyncConfig) -> Self {
+        SyncConfigPayload {
+            profile_name: value.profile_name,
+            protocol: value.protocol,
+            public_host: value.public_host,
+            public_port: value.public_port,
+            username: value.username,
+            password: value.password,
+            remote_path: value.remote_path,
+            remote_library_path: value.remote_library_path,
+        }
+    }
 }
 
 impl SyncConfigPayload {
@@ -707,6 +774,69 @@ fn sync_manifest_path(local_root_path: &str) -> Result<PathBuf, String> {
     Ok(Path::new(&layout.hidden_root).join("sync-manifest.json"))
 }
 
+fn sync_config_path(local_root_path: &str) -> Result<PathBuf, String> {
+    let layout = ensure_library_layout(local_root_path)?;
+    Ok(Path::new(&layout.hidden_root).join("sync-config.json"))
+}
+
+fn sync_state_path(local_root_path: &str) -> Result<PathBuf, String> {
+    let layout = ensure_library_layout(local_root_path)?;
+    Ok(Path::new(&layout.hidden_root).join("sync-state.json"))
+}
+
+fn load_stored_sync_config(local_root_path: &str) -> Result<Option<StoredSyncConfig>, String> {
+    let path = sync_config_path(local_root_path)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let raw = fs::read_to_string(&path)
+        .map_err(|error| format!("Failed to read sync config {}: {error}", path.display()))?;
+    let parsed = serde_json::from_str(&raw)
+        .map_err(|error| format!("Failed to parse sync config {}: {error}", path.display()))?;
+    Ok(Some(parsed))
+}
+
+fn save_stored_sync_config(local_root_path: &str, config: &StoredSyncConfig) -> Result<(), String> {
+    let path = sync_config_path(local_root_path)?;
+    let raw = serde_json::to_string_pretty(config)
+        .map_err(|error| format!("Failed to serialize sync config: {error}"))?;
+    fs::write(&path, raw)
+        .map_err(|error| format!("Failed to write sync config {}: {error}", path.display()))
+}
+
+fn clear_stored_sync_config(local_root_path: &str) -> Result<(), String> {
+    let path = sync_config_path(local_root_path)?;
+    if path.exists() {
+        fs::remove_file(&path)
+            .map_err(|error| format!("Failed to remove sync config {}: {error}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn load_persisted_sync_state(local_root_path: &str) -> Result<PersistedSyncState, String> {
+    let path = sync_state_path(local_root_path)?;
+    if !path.exists() {
+        return Ok(PersistedSyncState::default());
+    }
+
+    let raw = fs::read_to_string(&path)
+        .map_err(|error| format!("Failed to read sync state {}: {error}", path.display()))?;
+    serde_json::from_str(&raw)
+        .map_err(|error| format!("Failed to parse sync state {}: {error}", path.display()))
+}
+
+fn save_persisted_sync_state(
+    local_root_path: &str,
+    state: &PersistedSyncState,
+) -> Result<(), String> {
+    let path = sync_state_path(local_root_path)?;
+    let raw = serde_json::to_string_pretty(state)
+        .map_err(|error| format!("Failed to serialize sync state: {error}"))?;
+    fs::write(&path, raw)
+        .map_err(|error| format!("Failed to write sync state {}: {error}", path.display()))
+}
+
 fn load_sync_manifest(local_root_path: &str) -> Result<SyncManifest, String> {
     let path = sync_manifest_path(local_root_path)?;
     if !path.exists() {
@@ -725,6 +855,20 @@ fn save_sync_manifest(local_root_path: &str, manifest: &SyncManifest) -> Result<
         .map_err(|error| format!("Failed to serialize sync manifest: {error}"))?;
     fs::write(&path, raw)
         .map_err(|error| format!("Failed to write sync manifest {}: {error}", path.display()))
+}
+
+fn persist_sync_status_snapshot(
+    local_root_path: &str,
+    status: &SyncStatusResponse,
+) -> Result<(), String> {
+    let state = PersistedSyncState {
+        last_sync_at_ms: status.last_sync_at_ms,
+        last_sync_direction: status.last_sync_direction.clone(),
+        last_error_message: status.last_error_message.clone(),
+        last_message: status.message.clone(),
+        unresolved_conflicts: status.conflicts.clone(),
+    };
+    save_persisted_sync_state(local_root_path, &state)
 }
 
 fn collect_markdown_files(directory: &Path, output: &mut Vec<PathBuf>) -> Result<(), String> {
@@ -1119,10 +1263,13 @@ fn resolve_asset_path_from_relative(
     Ok(candidate)
 }
 
-fn prune_empty_asset_directories(start_directory: &Path, assets_root: &Path) -> Result<(), String> {
+fn prune_empty_parent_directories(
+    start_directory: &Path,
+    root_boundary: &Path,
+) -> Result<(), String> {
     let mut current = start_directory.to_path_buf();
 
-    while current.starts_with(assets_root) && current != assets_root {
+    while current.starts_with(root_boundary) && current != root_boundary {
         let is_empty = fs::read_dir(&current)
             .map_err(|error| {
                 format!(
@@ -1294,6 +1441,35 @@ fn search_snippet(body: &str, query: &str) -> String {
         snippet.push_str("...");
     }
     snippet
+}
+
+fn count_occurrences(haystack: &str, needle: &str) -> usize {
+    if needle.is_empty() {
+        return 0;
+    }
+
+    haystack.match_indices(needle).count()
+}
+
+fn recency_score(updated_at_ms: Option<u64>) -> usize {
+    let Some(updated_at_ms) = updated_at_ms else {
+        return 0;
+    };
+    let Ok(now_ms) = current_timestamp_ms() else {
+        return 0;
+    };
+    let age_ms = now_ms.saturating_sub(updated_at_ms);
+    let day_ms = 24 * 60 * 60 * 1000;
+
+    if age_ms <= day_ms {
+        12
+    } else if age_ms <= day_ms * 7 {
+        8
+    } else if age_ms <= day_ms * 30 {
+        4
+    } else {
+        0
+    }
 }
 
 fn asset_kind_from_path(path: &Path) -> String {
@@ -1808,6 +1984,27 @@ fn preview_sync_operation(
         }
     }
 
+    for (relative_path, manifest_entry) in manifest_entries {
+        if source_inventory.contains_key(relative_path) {
+            continue;
+        }
+
+        match destination_inventory.get(relative_path) {
+            Some(destination_entry)
+                if destination_entry.content_hash == manifest_entry.content_hash
+                    && destination_entry.size_bytes == manifest_entry.size_bytes =>
+            {
+                result.deleted_count += 1;
+            }
+            Some(_) => {
+                if !result.conflicts.contains(relative_path) {
+                    result.conflicts.push(relative_path.clone());
+                }
+            }
+            None => {}
+        }
+    }
+
     result
 }
 
@@ -1818,6 +2015,7 @@ fn upsert_manifest_entry(
     timestamp_ms: u64,
     direction: &str,
 ) {
+    profile_manifest.tombstones.remove(&relative_path);
     profile_manifest.entries.insert(
         relative_path,
         SyncManifestEntry {
@@ -2039,6 +2237,7 @@ fn connect_remote_library(config: &SyncConfigPayload) -> Result<RemoteConnection
 }
 
 fn sync_status_from_error(config: &SyncConfigPayload, message: String) -> SyncStatusResponse {
+    let last_error_message = Some(message.clone());
     SyncStatusResponse {
         status: "failed".to_string(),
         configured: true,
@@ -2053,8 +2252,12 @@ fn sync_status_from_error(config: &SyncConfigPayload, message: String) -> SyncSt
         remote_snapshot: None,
         copied_count: 0,
         skipped_count: 0,
+        deleted_count: 0,
         conflict_count: 0,
         conflicts: Vec::new(),
+        last_sync_at_ms: None,
+        last_sync_direction: "none".to_string(),
+        last_error_message,
     }
 }
 
@@ -2098,6 +2301,7 @@ fn build_sync_status_response(
             .unwrap_or(SyncProfileManifest {
                 last_direction: "push_local_to_remote".to_string(),
                 updated_at_ms: 0,
+                tombstones: HashMap::new(),
                 entries: HashMap::new(),
             });
     let local_inventory = build_file_inventory(local_root_path)?;
@@ -2117,6 +2321,7 @@ fn build_sync_status_response(
         false,
     );
     let conflict_count = preview.conflicts.len();
+    let persisted_state = load_persisted_sync_state(local_root_path)?;
     let suggested_direction = if snapshots_are_equal {
         "none".to_string()
     } else {
@@ -2164,8 +2369,12 @@ fn build_sync_status_response(
         remote_snapshot: Some(remote_snapshot),
         copied_count,
         skipped_count,
+        deleted_count: preview.deleted_count,
         conflict_count,
         conflicts: preview.conflicts,
+        last_sync_at_ms: persisted_state.last_sync_at_ms,
+        last_sync_direction: persisted_state.last_sync_direction,
+        last_error_message: persisted_state.last_error_message,
     })
 }
 
@@ -2214,6 +2423,7 @@ fn sync_library_contents(
             .or_insert_with(|| SyncProfileManifest {
                 last_direction: direction.to_string(),
                 updated_at_ms: 0,
+                tombstones: HashMap::new(),
                 entries: HashMap::new(),
             });
     let preview = preview_sync_operation(
@@ -2225,6 +2435,7 @@ fn sync_library_contents(
     let mut result = SyncExecutionResult {
         copied_count: 0,
         skipped_count: preview.skipped_count,
+        deleted_count: 0,
         conflicts: preview.conflicts.clone(),
     };
 
@@ -2260,10 +2471,94 @@ fn sync_library_contents(
                 );
             }
         }
+
+        profile_manifest
+            .tombstones
+            .remove(&source_entry.relative_path);
+    }
+
+    let manifest_entries = profile_manifest.entries.clone();
+    for (relative_path, manifest_entry) in manifest_entries {
+        if source_inventory.contains_key(&relative_path) {
+            continue;
+        }
+
+        match destination_inventory.get(&relative_path) {
+            Some(destination_entry)
+                if destination_entry.content_hash == manifest_entry.content_hash
+                    && destination_entry.size_bytes == manifest_entry.size_bytes =>
+            {
+                fs::remove_file(&destination_entry.absolute_path).map_err(|error| {
+                    format!(
+                        "Failed to remove synced file {}: {error}",
+                        destination_entry.absolute_path.display()
+                    )
+                })?;
+                if let Some(parent_directory) = destination_entry.absolute_path.parent() {
+                    prune_empty_parent_directories(
+                        parent_directory,
+                        Path::new(&destination_layout.root_path),
+                    )?;
+                }
+                profile_manifest.entries.remove(&relative_path);
+                profile_manifest
+                    .tombstones
+                    .insert(relative_path.clone(), timestamp_ms);
+                profile_manifest.updated_at_ms = timestamp_ms;
+                profile_manifest.last_direction = direction.to_string();
+                result.deleted_count += 1;
+            }
+            Some(_) => {
+                if !result.conflicts.contains(&relative_path) {
+                    result.conflicts.push(relative_path);
+                }
+            }
+            None => {
+                profile_manifest.entries.remove(&relative_path);
+                profile_manifest
+                    .tombstones
+                    .insert(relative_path, timestamp_ms);
+                profile_manifest.updated_at_ms = timestamp_ms;
+                profile_manifest.last_direction = direction.to_string();
+            }
+        }
     }
 
     save_sync_manifest(local_root_path, &manifest)?;
     Ok(result)
+}
+
+#[tauri::command]
+fn load_sync_preferences(local_root_path: String) -> Result<SyncPreferencesResponse, String> {
+    ensure_library_layout(&local_root_path)?;
+    Ok(SyncPreferencesResponse {
+        config: load_stored_sync_config(&local_root_path)?,
+        state: load_persisted_sync_state(&local_root_path)?,
+    })
+}
+
+#[tauri::command]
+fn save_sync_preferences(
+    local_root_path: String,
+    config: SyncConfigPayload,
+) -> Result<SyncPreferencesResponse, String> {
+    ensure_library_layout(&local_root_path)?;
+    let stored = StoredSyncConfig::from(&config);
+    save_stored_sync_config(&local_root_path, &stored)?;
+    Ok(SyncPreferencesResponse {
+        config: Some(stored),
+        state: load_persisted_sync_state(&local_root_path)?,
+    })
+}
+
+#[tauri::command]
+fn clear_sync_preferences(local_root_path: String) -> Result<SyncPreferencesResponse, String> {
+    ensure_library_layout(&local_root_path)?;
+    clear_stored_sync_config(&local_root_path)?;
+    Ok(SyncPreferencesResponse {
+        config: None,
+        state: load_persisted_sync_state(&local_root_path)?,
+    })
 }
 
 #[tauri::command]
@@ -2346,36 +2641,45 @@ fn search_library(
         let mut match_kind = "recent".to_string();
 
         if query.is_empty() {
-            score = 1;
+            score = 1 + recency_score(parsed_note.summary.updated_at_ms);
         } else {
+            if title == query {
+                score += 140;
+                match_kind = "title".to_string();
+            } else if title.starts_with(&query) {
+                score += 95;
+                match_kind = "title".to_string();
+            }
             if title.contains(&query) {
-                score += 70;
+                score += 70 + count_occurrences(&title, &query).min(3) * 8;
                 match_kind = "title".to_string();
             }
             if tags.contains(&query) {
-                score += 55;
+                score += 55 + count_occurrences(&tags, &query).min(4) * 5;
                 if match_kind == "recent" {
                     match_kind = "tag".to_string();
                 }
             }
             if relative_path.contains(&query) {
-                score += 35;
+                score += 35 + count_occurrences(&relative_path, &query).min(3) * 4;
                 if match_kind == "recent" {
                     match_kind = "path".to_string();
                 }
             }
             if summary.contains(&query) {
-                score += 25;
+                score += 25 + count_occurrences(&summary, &query).min(3) * 3;
                 if match_kind == "recent" {
                     match_kind = "summary".to_string();
                 }
             }
             if body.contains(&query) {
-                score += 15;
+                score += 15 + count_occurrences(&body, &query).min(6) * 2;
                 if match_kind == "recent" {
                     match_kind = "body".to_string();
                 }
             }
+
+            score += recency_score(parsed_note.summary.updated_at_ms);
 
             if score == 0 {
                 continue;
@@ -3298,7 +3602,7 @@ fn delete_library_asset(
     })?;
 
     if let Some(parent_directory) = asset_absolute_path.parent() {
-        prune_empty_asset_directories(parent_directory, &assets_root)?;
+        prune_empty_parent_directories(parent_directory, &assets_root)?;
     }
 
     Ok(DeleteLibraryAssetResponse {
@@ -3369,7 +3673,11 @@ fn prepare_sync(
 
     let connection = match connect_remote_library(&config) {
         Ok(connection) => connection,
-        Err(error) => return Ok(sync_status_from_error(&config, error)),
+        Err(error) => {
+            let response = sync_status_from_error(&config, error);
+            persist_sync_status_snapshot(&local_root_path, &response)?;
+            return Ok(response);
+        }
     };
 
     let local_snapshot = build_library_snapshot(&local_root_path)?;
@@ -3411,7 +3719,7 @@ fn prepare_sync(
         "Local offline library is ready to push into the remote sync target.".to_string()
     };
 
-    Ok(SyncStatusResponse {
+    let response = SyncStatusResponse {
         status: if requires_initial_decision {
             "decision_required".to_string()
         } else {
@@ -3429,9 +3737,15 @@ fn prepare_sync(
         remote_snapshot: Some(remote_snapshot),
         copied_count: 0,
         skipped_count: 0,
+        deleted_count: 0,
         conflict_count: 0,
         conflicts: Vec::new(),
-    })
+        last_sync_at_ms: load_persisted_sync_state(&local_root_path)?.last_sync_at_ms,
+        last_sync_direction: load_persisted_sync_state(&local_root_path)?.last_sync_direction,
+        last_error_message: load_persisted_sync_state(&local_root_path)?.last_error_message,
+    };
+    persist_sync_status_snapshot(&local_root_path, &response)?;
+    Ok(response)
 }
 
 #[tauri::command]
@@ -3439,7 +3753,11 @@ fn sync_libraries(payload: SyncLibrariesPayload) -> Result<SyncStatusResponse, S
     ensure_library_layout(&payload.local_root_path)?;
     let connection = match connect_remote_library(&payload.config) {
         Ok(connection) => connection,
-        Err(error) => return Ok(sync_status_from_error(&payload.config, error)),
+        Err(error) => {
+            let response = sync_status_from_error(&payload.config, error);
+            persist_sync_status_snapshot(&payload.local_root_path, &response)?;
+            return Ok(response);
+        }
     };
 
     let (source_root, destination_root, message_prefix) = match payload.direction.as_str() {
@@ -3469,18 +3787,24 @@ fn sync_libraries(payload: SyncLibrariesPayload) -> Result<SyncStatusResponse, S
         payload.allow_initial_override,
     )?;
 
-    build_sync_status_response(
+    let mut response = build_sync_status_response(
         &payload.local_root_path,
         &payload.config,
         &connection,
         None,
         Some(format!(
-            "{} {message_prefix} This sync copied {} files, skipped {} unchanged files, and still does not delete extra destination files automatically.",
-            payload.config.profile_name, execution.copied_count, execution.skipped_count
+            "{} {message_prefix} This sync copied {} files, deleted {} synced files, skipped {} unchanged files, and still leaves unresolved conflicts for manual review.",
+            payload.config.profile_name, execution.copied_count, execution.deleted_count, execution.skipped_count
         )),
         execution.copied_count,
         execution.skipped_count,
-    )
+    )?;
+    response.deleted_count = execution.deleted_count;
+    response.last_sync_at_ms = Some(current_timestamp_ms()?);
+    response.last_sync_direction = payload.direction.clone();
+    response.last_error_message = None;
+    persist_sync_status_snapshot(&payload.local_root_path, &response)?;
+    Ok(response)
 }
 
 #[tauri::command]
@@ -3490,7 +3814,11 @@ fn resolve_sync_conflict(
     ensure_library_layout(&payload.local_root_path)?;
     let connection = match connect_remote_library(&payload.config) {
         Ok(connection) => connection,
-        Err(error) => return Ok(sync_status_from_error(&payload.config, error)),
+        Err(error) => {
+            let response = sync_status_from_error(&payload.config, error);
+            persist_sync_status_snapshot(&payload.local_root_path, &response)?;
+            return Ok(response);
+        }
     };
     let local_inventory = build_file_inventory(&payload.local_root_path)?;
     let remote_inventory = build_file_inventory(&connection.remote_root_path)?;
@@ -3504,6 +3832,7 @@ fn resolve_sync_conflict(
             .or_insert_with(|| SyncProfileManifest {
                 last_direction: "push_local_to_remote".to_string(),
                 updated_at_ms: 0,
+                tombstones: HashMap::new(),
                 entries: HashMap::new(),
             });
 
@@ -3544,7 +3873,7 @@ fn resolve_sync_conflict(
     );
     save_sync_manifest(&payload.local_root_path, &manifest)?;
 
-    build_sync_status_response(
+    let mut response = build_sync_status_response(
         &payload.local_root_path,
         &payload.config,
         &connection,
@@ -3555,7 +3884,12 @@ fn resolve_sync_conflict(
         )),
         1,
         0,
-    )
+    )?;
+    response.last_sync_at_ms = Some(current_timestamp_ms()?);
+    response.last_sync_direction = direction.to_string();
+    response.last_error_message = None;
+    persist_sync_status_snapshot(&payload.local_root_path, &response)?;
+    Ok(response)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -3563,6 +3897,9 @@ pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             get_default_local_library,
+            load_sync_preferences,
+            save_sync_preferences,
+            clear_sync_preferences,
             inspect_library,
             load_library_index,
             search_library,

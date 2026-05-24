@@ -19,9 +19,11 @@ declare global {
   }
 }
 
-const SYNC_CONFIG_KEY = 'notebase:sync-config'
 const SELECTED_NOTE_KEY = 'notebase:selected-note-id'
 const NOTEBOOKS_KEY = 'notebase:notebooks'
+const COMMAND_PALETTE_DOCUMENT_FILTER_KEY = 'notebase:command-palette-document-filter'
+const COMMAND_PALETTE_NOTEBOOK_FILTER_KEY = 'notebase:command-palette-notebook-filter'
+const COMMAND_PALETTE_TAG_FILTER_KEY = 'notebase:command-palette-tag-filter'
 const INVOKE_TIMEOUT_MS = 12000
 const MIN_SAVE_SPINNER_MS = 450
 const BROWSER_LOCAL_PATH_PLACEHOLDER = '~/Documents/NoteBase'
@@ -168,6 +170,7 @@ type KnowledgeGraphResponse = {
 type WorkspaceView = 'notes' | 'graph' | 'media'
 type MediaFilter = 'all' | 'image' | 'pdf' | 'video' | 'file' | 'unlinked'
 type MediaSort = 'newest' | 'oldest' | 'name' | 'largest'
+type GraphScope = 'focused' | 'full'
 type SettingsTab = 'general' | 'sync'
 
 type MediaAssetRecord = {
@@ -242,8 +245,25 @@ type SyncStatusResponse = {
   remoteSnapshot: LibrarySnapshot | null
   copiedCount: number
   skippedCount: number
+  deletedCount: number
   conflictCount: number
   conflicts: string[]
+  lastSyncAtMs: number | null
+  lastSyncDirection: string
+  lastErrorMessage: string | null
+}
+
+type PersistedSyncState = {
+  lastSyncAtMs: number | null
+  lastSyncDirection: string
+  lastErrorMessage: string | null
+  lastMessage: string
+  unresolvedConflicts: string[]
+}
+
+type SyncPreferencesResponse = {
+  config: SyncConfig | null
+  state: PersistedSyncState
 }
 
 const emptySyncConfig: SyncConfig = {
@@ -271,8 +291,12 @@ const emptySyncStatus = (message: string): SyncStatusResponse => ({
   remoteSnapshot: null,
   copiedCount: 0,
   skippedCount: 0,
+  deletedCount: 0,
   conflictCount: 0,
   conflicts: [],
+  lastSyncAtMs: null,
+  lastSyncDirection: 'none',
+  lastErrorMessage: null,
 })
 
 const isTauriRuntime = () =>
@@ -313,6 +337,28 @@ const formatFileSize = (sizeBytes: number) => {
   return `${sizeBytes} B`
 }
 
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+const renderHighlightedText = (text: string, query: string) => {
+  const normalizedQuery = query.trim()
+  if (!normalizedQuery) {
+    return text
+  }
+
+  const matcher = new RegExp(`(${escapeRegExp(normalizedQuery)})`, 'ig')
+  const parts = text.split(matcher)
+
+  return parts.map((part, index) =>
+    part.toLowerCase() === normalizedQuery.toLowerCase() ? (
+      <mark key={`${part}-${index}`} className="command-palette-highlight">
+        {part}
+      </mark>
+    ) : (
+      <Fragment key={`${part}-${index}`}>{part}</Fragment>
+    ),
+  )
+}
+
 const mediaSortLabel = (sort: MediaSort) => {
   switch (sort) {
     case 'oldest':
@@ -327,26 +373,13 @@ const mediaSortLabel = (sort: MediaSort) => {
   }
 }
 
-const loadStoredSyncConfig = (): SyncConfig | null => {
+const loadStoredCommandPaletteFilter = (key: string, fallback = 'all') => {
   if (typeof window === 'undefined') {
-    return null
+    return fallback
   }
 
-  const raw = window.localStorage.getItem(SYNC_CONFIG_KEY)
-  if (!raw) {
-    return null
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as Partial<SyncConfig>
-    return {
-      ...emptySyncConfig,
-      ...parsed,
-      protocol: parsed.protocol === 'https' ? 'https' : 'http',
-    }
-  } catch {
-    return null
-  }
+  const value = window.localStorage.getItem(key)?.trim()
+  return value ? value : fallback
 }
 
 const loadStoredNotebooks = () => {
@@ -480,6 +513,26 @@ const documentTypeMeta: Array<{ key: DocumentType; label: string; createLabel: s
   { key: 'note', label: 'Notes', createLabel: 'New Note', icon: 'notes' },
   { key: 'journal', label: 'Journal', createLabel: 'New Journal', icon: 'today' },
 ]
+
+const documentTypeLabel = (documentType: DocumentType) =>
+  documentTypeMeta.find((item) => item.key === documentType)?.label ?? 'Notes'
+
+const searchMatchKindLabel = (matchKind: string) => {
+  switch (matchKind) {
+    case 'title':
+      return 'Title match'
+    case 'tag':
+      return 'Tag match'
+    case 'path':
+      return 'Path match'
+    case 'summary':
+      return 'Summary match'
+    case 'body':
+      return 'Body match'
+    default:
+      return 'Recent note'
+  }
+}
 
 const navItems = [
   { key: 'notes', label: 'Notes', shortLabel: 'Notes', icon: 'notes' },
@@ -1213,8 +1266,8 @@ function App() {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
   const [saveMessage, setSaveMessage] = useState('Select a note to start editing.')
   const [editorViewMode, setEditorViewMode] = useState<EditorViewMode>('markdown')
-  const [syncConfig, setSyncConfig] = useState<SyncConfig | null>(() => loadStoredSyncConfig())
-  const [draftSyncConfig, setDraftSyncConfig] = useState<SyncConfig>(() => loadStoredSyncConfig() ?? emptySyncConfig)
+  const [syncConfig, setSyncConfig] = useState<SyncConfig | null>(null)
+  const [draftSyncConfig, setDraftSyncConfig] = useState<SyncConfig>(emptySyncConfig)
   const [syncStatus, setSyncStatus] = useState<SyncStatusResponse>(
     emptySyncStatus('Sync has not been configured. Offline mode is active.'),
   )
@@ -1226,9 +1279,18 @@ function App() {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [commandPaletteQuery, setCommandPaletteQuery] = useState('')
   const [commandPaletteIndex, setCommandPaletteIndex] = useState(0)
-  const [commandPaletteDocumentTypeFilter, setCommandPaletteDocumentTypeFilter] = useState<DocumentType | 'all'>('all')
-  const [commandPaletteNotebookFilter, setCommandPaletteNotebookFilter] = useState('all')
-  const [commandPaletteTagFilter, setCommandPaletteTagFilter] = useState('all')
+  const [commandPaletteDocumentTypeFilter, setCommandPaletteDocumentTypeFilter] = useState<DocumentType | 'all'>(
+    () => {
+      const value = loadStoredCommandPaletteFilter(COMMAND_PALETTE_DOCUMENT_FILTER_KEY)
+      return value === 'todo' || value === 'note' || value === 'journal' ? value : 'all'
+    },
+  )
+  const [commandPaletteNotebookFilter, setCommandPaletteNotebookFilter] = useState(() =>
+    loadStoredCommandPaletteFilter(COMMAND_PALETTE_NOTEBOOK_FILTER_KEY),
+  )
+  const [commandPaletteTagFilter, setCommandPaletteTagFilter] = useState(() =>
+    loadStoredCommandPaletteFilter(COMMAND_PALETTE_TAG_FILTER_KEY),
+  )
   const [searchResults, setSearchResults] = useState<SearchLibraryResult[]>([])
   const [searchBusy, setSearchBusy] = useState(false)
   const [settingsPanelOpen, setSettingsPanelOpen] = useState(false)
@@ -1250,10 +1312,15 @@ function App() {
     message: 'Open Graph to build the local note graph.',
   })
   const [graphBusy, setGraphBusy] = useState(false)
+  const [graphScope, setGraphScope] = useState<GraphScope>('focused')
+  const [graphQuery, setGraphQuery] = useState('')
+  const [graphSelectedNodeId, setGraphSelectedNodeId] = useState<string | null>(null)
   const [mediaAssets, setMediaAssets] = useState<MediaAssetRecord[]>([])
   const [selectedMediaAssetId, setSelectedMediaAssetId] = useState<string | null>(null)
   const [mediaActionBusy, setMediaActionBusy] = useState(false)
   const [mediaSort, setMediaSort] = useState<MediaSort>('newest')
+  const [mediaSelectionMode, setMediaSelectionMode] = useState(false)
+  const [selectedMediaAssetIds, setSelectedMediaAssetIds] = useState<string[]>([])
 
   const runningInTauri = useMemo(() => isTauriRuntime(), [])
   const hasUnsavedChanges = selectedNoteDocument
@@ -1314,9 +1381,17 @@ function App() {
     : null
   const selectedMediaAsset =
     mediaAssets.find((asset) => asset.id === selectedMediaAssetId) ?? mediaAssets[0] ?? null
+  const selectedMediaAssets = useMemo(
+    () => mediaAssets.filter((asset) => selectedMediaAssetIds.includes(asset.id)),
+    [mediaAssets, selectedMediaAssetIds],
+  )
   const unlinkedMediaAssets = useMemo(
     () => mediaAssets.filter((asset) => asset.linkedNotes.length === 0),
     [mediaAssets],
+  )
+  const selectedUnlinkedMediaAssets = useMemo(
+    () => selectedMediaAssets.filter((asset) => asset.linkedNotes.length === 0),
+    [selectedMediaAssets],
   )
   const filteredMediaAssets = useMemo(() => {
     if (mediaFilter === 'all') {
@@ -1388,11 +1463,37 @@ function App() {
     : !runningInTauri
       ? 'Link inspection requires the Tauri desktop runtime.'
       : noteConnections.message
+  const graphQueryLower = graphQuery.trim().toLowerCase()
   const graphViewport = useMemo(() => {
-    const selectedNodeId = selectedNoteId ?? knowledgeGraph.nodes.find((node) => node.kind === 'note')?.id ?? null
+    const matchedNodeIds = new Set(
+      knowledgeGraph.nodes
+        .filter((node) => {
+          if (!graphQueryLower) {
+            return true
+          }
+          const haystacks = [
+            node.title,
+            node.relativePath ?? '',
+            node.notebook ?? '',
+            node.documentType ?? '',
+            node.tags.join(' '),
+          ]
+          return haystacks.some((value) => value.toLowerCase().includes(graphQueryLower))
+        })
+        .map((node) => node.id),
+    )
+    const fallbackNodeId = graphQueryLower
+      ? knowledgeGraph.nodes.find((node) => matchedNodeIds.has(node.id))?.id ?? null
+      : knowledgeGraph.nodes.find((node) => node.kind === 'note')?.id ?? null
+    const selectedNodeId =
+      graphSelectedNodeId && (!graphQueryLower || matchedNodeIds.has(graphSelectedNodeId))
+        ? graphSelectedNodeId
+        : selectedNoteId && (!graphQueryLower || matchedNodeIds.has(selectedNoteId))
+          ? selectedNoteId
+        : fallbackNodeId
     const visibleNodeIds = new Set<string>()
 
-    if (selectedNodeId) {
+    if (graphScope === 'focused' && selectedNodeId) {
       visibleNodeIds.add(selectedNodeId)
       for (const edge of knowledgeGraph.edges) {
         if (edge.source === selectedNodeId) {
@@ -1404,16 +1505,21 @@ function App() {
       }
     }
 
-    if (visibleNodeIds.size <= 1) {
+    if (graphScope === 'full' || visibleNodeIds.size <= 1) {
       for (const node of knowledgeGraph.nodes) {
-        if (visibleNodeIds.size >= 36) {
+        if (!matchedNodeIds.has(node.id)) {
+          continue
+        }
+        if (visibleNodeIds.size >= (graphScope === 'full' ? 48 : 36)) {
           break
         }
         visibleNodeIds.add(node.id)
       }
     }
 
-    const visibleNodes = knowledgeGraph.nodes.filter((node) => visibleNodeIds.has(node.id)).slice(0, 36)
+    const visibleNodes = knowledgeGraph.nodes
+      .filter((node) => visibleNodeIds.has(node.id) && matchedNodeIds.has(node.id))
+      .slice(0, graphScope === 'full' ? 48 : 36)
     const visibleIdSet = new Set(visibleNodes.map((node) => node.id))
     const visibleEdges = knowledgeGraph.edges.filter(
       (edge) => visibleIdSet.has(edge.source) && visibleIdSet.has(edge.target),
@@ -1446,7 +1552,39 @@ function App() {
     }
 
     return { nodes: visibleNodes, edges: visibleEdges, layout, centerNode }
-  }, [knowledgeGraph, selectedNoteId])
+  }, [graphQueryLower, graphScope, graphSelectedNodeId, knowledgeGraph, selectedNoteId])
+  const activeGraphNode =
+    graphViewport.centerNode ??
+    graphViewport.nodes.find((node) => node.id === graphSelectedNodeId) ??
+    graphViewport.nodes[0] ??
+    null
+  const activeGraphNodeConnections = useMemo(() => {
+    if (!activeGraphNode) {
+      return { outgoing: 0, incoming: 0, tags: 0 }
+    }
+
+    let outgoing = 0
+    let incoming = 0
+    let tags = 0
+
+    for (const edge of knowledgeGraph.edges) {
+      if (edge.kind === 'tag') {
+        if (edge.source === activeGraphNode.id || edge.target === activeGraphNode.id) {
+          tags += 1
+        }
+        continue
+      }
+
+      if (edge.source === activeGraphNode.id) {
+        outgoing += 1
+      }
+      if (edge.target === activeGraphNode.id) {
+        incoming += 1
+      }
+    }
+
+    return { outgoing, incoming, tags }
+  }, [activeGraphNode, knowledgeGraph.edges])
   const noteMenuTarget =
     noteMenuState
       ? knowledgeBaseIndex.notes.find((note) => note.id === noteMenuState.noteId) ?? null
@@ -1480,16 +1618,20 @@ function App() {
   }, [selectedNoteId])
 
   useEffect(() => {
-    if (syncConfig) {
-      window.localStorage.setItem(SYNC_CONFIG_KEY, JSON.stringify(syncConfig))
-    } else {
-      window.localStorage.removeItem(SYNC_CONFIG_KEY)
-    }
-  }, [syncConfig])
-
-  useEffect(() => {
     window.localStorage.setItem(NOTEBOOKS_KEY, JSON.stringify(storedNotebooks))
   }, [storedNotebooks])
+
+  useEffect(() => {
+    window.localStorage.setItem(COMMAND_PALETTE_DOCUMENT_FILTER_KEY, commandPaletteDocumentTypeFilter)
+  }, [commandPaletteDocumentTypeFilter])
+
+  useEffect(() => {
+    window.localStorage.setItem(COMMAND_PALETTE_NOTEBOOK_FILTER_KEY, commandPaletteNotebookFilter)
+  }, [commandPaletteNotebookFilter])
+
+  useEffect(() => {
+    window.localStorage.setItem(COMMAND_PALETTE_TAG_FILTER_KEY, commandPaletteTagFilter)
+  }, [commandPaletteTagFilter])
 
   const refreshLocalWorkspace = useCallback(async (rootPath: string) => {
     if (!runningInTauri) {
@@ -1669,9 +1811,27 @@ function App() {
         await refreshLocalWorkspace(response.rootPath)
         await refreshMediaAssets(response.rootPath)
         await refreshMigrationLog(response.rootPath)
+        const syncPreferences = await invokeWithTimeout<SyncPreferencesResponse>('load_sync_preferences', {
+          localRootPath: response.rootPath,
+        })
+        if (cancelled) {
+          return
+        }
+        setSyncConfig(syncPreferences.config)
+        setDraftSyncConfig(syncPreferences.config ?? emptySyncConfig)
 
-        if (syncConfig) {
-          await assessSyncReadiness(response.rootPath, syncConfig)
+        if (syncPreferences.config) {
+          await assessSyncReadiness(response.rootPath, syncPreferences.config)
+        } else if (syncPreferences.state.lastMessage) {
+          setSyncStatus({
+            ...emptySyncStatus(syncPreferences.state.lastMessage),
+            configured: false,
+            lastSyncAtMs: syncPreferences.state.lastSyncAtMs,
+            lastSyncDirection: syncPreferences.state.lastSyncDirection || 'none',
+            lastErrorMessage: syncPreferences.state.lastErrorMessage,
+            conflicts: syncPreferences.state.unresolvedConflicts,
+            conflictCount: syncPreferences.state.unresolvedConflicts.length,
+          })
         } else {
           setSyncStatus(
             emptySyncStatus(
@@ -1697,7 +1857,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [assessSyncReadiness, refreshLocalWorkspace, refreshMediaAssets, refreshMigrationLog, runningInTauri, syncConfig])
+  }, [assessSyncReadiness, refreshLocalWorkspace, refreshMediaAssets, refreshMigrationLog, runningInTauri])
 
   useEffect(() => {
     if (!selectedNoteId || !localRootPath) {
@@ -2322,6 +2482,97 @@ function App() {
     }
   }, [localRootPath, refreshLocalWorkspace, refreshMediaAssets, runningInTauri, unlinkedMediaAssets])
 
+  const handleDeleteSelectedMediaAssets = useCallback(async () => {
+    if (!runningInTauri) {
+      setSaveStatus('error')
+      setSaveMessage('Deleting local assets requires the Tauri desktop runtime.')
+      return
+    }
+
+    if (!localRootPath) {
+      setSaveStatus('error')
+      setSaveMessage('The offline knowledge base path is still loading.')
+      return
+    }
+
+    if (selectedUnlinkedMediaAssets.length === 0) {
+      setSaveStatus('saved')
+      setSaveMessage('Select one or more unlinked assets to delete.')
+      return
+    }
+
+    const confirmed = window.confirm(
+      `Delete ${selectedUnlinkedMediaAssets.length} selected unlinked asset${selectedUnlinkedMediaAssets.length === 1 ? '' : 's'}? This cannot be undone.`,
+    )
+    if (!confirmed) {
+      return
+    }
+
+    setMediaActionBusy(true)
+    let deletedCount = 0
+
+    try {
+      for (const asset of selectedUnlinkedMediaAssets) {
+        await invokeWithTimeout<DeleteLibraryAssetResponse>('delete_library_asset', {
+          payload: {
+            rootPath: localRootPath,
+            relativeAssetPath: asset.relativeAssetPath,
+          },
+        })
+        deletedCount += 1
+      }
+
+      await refreshLocalWorkspace(localRootPath)
+      await refreshMediaAssets(localRootPath)
+      setSelectedMediaAssetIds([])
+      setMediaSelectionMode(false)
+      setSaveStatus('saved')
+      setSaveMessage(
+        `Deleted ${deletedCount} selected unlinked asset${deletedCount === 1 ? '' : 's'} from the offline library.`,
+      )
+    } catch (error) {
+      setSaveStatus('error')
+      setSaveMessage(
+        error instanceof Error
+          ? error.message
+          : `Stopped after deleting ${deletedCount} selected unlinked asset${deletedCount === 1 ? '' : 's'}.`,
+      )
+      await refreshLocalWorkspace(localRootPath)
+      await refreshMediaAssets(localRootPath)
+    } finally {
+      setMediaActionBusy(false)
+    }
+  }, [localRootPath, refreshLocalWorkspace, refreshMediaAssets, runningInTauri, selectedUnlinkedMediaAssets])
+
+  const handleToggleMediaSelectionMode = useCallback(() => {
+    setMediaSelectionMode((current) => {
+      if (current) {
+        setSelectedMediaAssetIds([])
+      }
+      return !current
+    })
+  }, [])
+
+  const handleSelectAllVisibleMediaAssets = useCallback(() => {
+    setSelectedMediaAssetIds(sortedMediaAssets.map((asset) => asset.id))
+  }, [sortedMediaAssets])
+
+  const handleClearMediaSelection = useCallback(() => {
+    setSelectedMediaAssetIds([])
+  }, [])
+
+  const handleMediaCardClick = useCallback((assetId: string) => {
+    setSelectedMediaAssetId(assetId)
+
+    if (!mediaSelectionMode) {
+      return
+    }
+
+    setSelectedMediaAssetIds((current) =>
+      current.includes(assetId) ? current.filter((id) => id !== assetId) : [...current, assetId],
+    )
+  }, [mediaSelectionMode])
+
   const handleInsertCodeWithLanguage = useCallback(
     (language: string) => {
       insertCodeBlock(language)
@@ -2759,7 +3010,16 @@ function App() {
   }
 
   const handleConnectSync = async () => {
-    setSyncConfig(draftSyncConfig)
+    if (!runningInTauri || !localRootPath) {
+      return
+    }
+
+    const response = await invokeWithTimeout<SyncPreferencesResponse>('save_sync_preferences', {
+      localRootPath,
+      config: draftSyncConfig,
+    })
+    setSyncConfig(response.config)
+    setDraftSyncConfig(response.config ?? emptySyncConfig)
     await assessSyncReadiness(localRootPath, draftSyncConfig)
     setSettingsPanelOpen(false)
   }
@@ -2863,7 +3123,10 @@ function App() {
     void handleRunSyncWithOptions('push_local_to_remote', false)
   }, [handleRunSyncWithOptions, syncConfig, syncStatus.conflictCount, syncStatus.status])
 
-  const handleDisconnectSync = () => {
+  const handleDisconnectSync = async () => {
+    if (runningInTauri && localRootPath) {
+      await invokeWithTimeout<SyncPreferencesResponse>('clear_sync_preferences', { localRootPath })
+    }
     setSyncConfig(null)
     setDraftSyncConfig(emptySyncConfig)
     setSyncStatus(
@@ -3300,7 +3563,7 @@ function App() {
           group: 'search_results' as const,
           title: result.note.title,
           subtitle: result.snippet,
-          meta: result.matchKind,
+          meta: `${searchMatchKindLabel(result.matchKind)} • ${documentTypeLabel(result.note.documentType)}${result.note.notebook ? ` • ${result.note.notebook}` : ''}`,
           run: () => {
             handleSelectNote(result.note.id)
             closeCommandPalette()
@@ -4340,7 +4603,7 @@ function App() {
                   {graphViewport.nodes.length > 0 ? (
                     graphViewport.nodes.map((node) => {
                       const position = graphViewport.layout.get(node.id) ?? { x: 50, y: 50 }
-                      const isActive = node.id === selectedNoteId
+                      const isActive = node.id === activeGraphNode?.id
                       return (
                         <button
                           key={node.id}
@@ -4349,13 +4612,7 @@ function App() {
                           style={{ left: `${position.x}%`, top: `${position.y}%` }}
                           title={node.relativePath ?? `#${node.title}`}
                           onClick={() => {
-                            if (node.kind === 'note') {
-                              setSelectedNoteId(node.id)
-                              navigateToView('notes')
-                            } else {
-                              setCommandPaletteTagFilter(node.title)
-                              openCommandPalette()
-                            }
+                            setGraphSelectedNodeId(node.id)
                           }}
                         >
                           <strong>{node.kind === 'tag' ? `#${node.title}` : node.title}</strong>
@@ -4398,10 +4655,73 @@ function App() {
                 <div className="graph-filter-card">
                   <div className="section-heading">
                     <strong>Knowledge Graph</strong>
-                    <button type="button" className="ghost-action" onClick={() => navigateToView('notes')}>
-                      Notes
+                    {activeGraphNode?.kind === 'note' ? (
+                      <button
+                        type="button"
+                        className="ghost-action"
+                        onClick={() => {
+                          setSelectedNoteId(activeGraphNode.id)
+                          navigateToView('notes')
+                        }}
+                      >
+                        Open Note
+                      </button>
+                    ) : activeGraphNode?.kind === 'tag' ? (
+                      <button
+                        type="button"
+                        className="ghost-action"
+                        onClick={() => {
+                          setCommandPaletteTagFilter(activeGraphNode.title)
+                          openCommandPalette()
+                        }}
+                      >
+                        Search Tag
+                      </button>
+                    ) : (
+                      <button type="button" className="ghost-action" onClick={() => navigateToView('notes')}>
+                        Notes
+                      </button>
+                    )}
+                  </div>
+                  {activeGraphNode ? (
+                    <div className="graph-detail-card">
+                      <strong>{activeGraphNode.kind === 'tag' ? `#${activeGraphNode.title}` : activeGraphNode.title}</strong>
+                      <span>
+                        {activeGraphNode.kind === 'tag'
+                          ? 'Tag node'
+                          : `${documentTypeLabel(activeGraphNode.documentType ?? 'note')}${activeGraphNode.notebook ? ` • ${activeGraphNode.notebook}` : ''}`}
+                      </span>
+                      {activeGraphNode.relativePath ? <span>{activeGraphNode.relativePath}</span> : null}
+                      <div className="graph-detail-meta">
+                        <span>{activeGraphNodeConnections.outgoing} outgoing</span>
+                        <span>{activeGraphNodeConnections.incoming} backlinks</span>
+                        <span>{activeGraphNodeConnections.tags} tag links</span>
+                      </div>
+                    </div>
+                  ) : null}
+                  <div className="graph-mode-row">
+                    <button
+                      type="button"
+                      className={`graph-mode-chip ${graphScope === 'focused' ? 'active' : ''}`}
+                      onClick={() => setGraphScope('focused')}
+                    >
+                      Focused
+                    </button>
+                    <button
+                      type="button"
+                      className={`graph-mode-chip ${graphScope === 'full' ? 'active' : ''}`}
+                      onClick={() => setGraphScope('full')}
+                    >
+                      Full
                     </button>
                   </div>
+                  <label className="graph-search-field">
+                    <input
+                      value={graphQuery}
+                      onChange={(event) => setGraphQuery(event.target.value)}
+                      placeholder="Find note or tag"
+                    />
+                  </label>
                   <div className="graph-filter-row">
                     <span className="graph-filter-dot blue" />
                     <span>Note nodes</span>
@@ -4451,6 +4771,9 @@ function App() {
                   <div className="media-toolbar-meta">
                     <span>{sortedMediaAssets.length} items</span>
                     <span>{unlinkedMediaAssets.length} unlinked</span>
+                    {mediaSelectionMode ? (
+                      <span>{selectedMediaAssetIds.length} selected</span>
+                    ) : null}
                     <label className="media-sort-control">
                       <span>Sort</span>
                       <select value={mediaSort} onChange={(event) => setMediaSort(event.target.value as MediaSort)}>
@@ -4470,6 +4793,44 @@ function App() {
                     </button>
                     <button
                       type="button"
+                      className="ghost-action"
+                      disabled={mediaActionBusy || sortedMediaAssets.length === 0}
+                      onClick={handleToggleMediaSelectionMode}
+                    >
+                      {mediaSelectionMode ? 'Done Selecting' : 'Select'}
+                    </button>
+                    {mediaSelectionMode ? (
+                      <>
+                        <button
+                          type="button"
+                          className="ghost-action"
+                          disabled={mediaActionBusy || sortedMediaAssets.length === 0}
+                          onClick={handleSelectAllVisibleMediaAssets}
+                        >
+                          Select Visible
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-action"
+                          disabled={mediaActionBusy || selectedMediaAssetIds.length === 0}
+                          onClick={handleClearMediaSelection}
+                        >
+                          Clear
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-danger"
+                          disabled={mediaActionBusy || selectedUnlinkedMediaAssets.length === 0}
+                          onClick={() => void handleDeleteSelectedMediaAssets()}
+                        >
+                          {mediaActionBusy
+                            ? 'Deleting…'
+                            : `Delete Selected Unlinked (${selectedUnlinkedMediaAssets.length})`}
+                        </button>
+                      </>
+                    ) : null}
+                    <button
+                      type="button"
                       className="ghost-danger"
                       disabled={mediaActionBusy || unlinkedMediaAssets.length === 0}
                       onClick={() => void handleDeleteAllUnlinkedAssets()}
@@ -4485,9 +4846,14 @@ function App() {
                       <button
                         key={asset.id}
                         type="button"
-                        className={`media-card ${selectedMediaAsset?.id === asset.id ? 'active' : ''}`}
-                        onClick={() => setSelectedMediaAssetId(asset.id)}
+                        className={`media-card ${selectedMediaAsset?.id === asset.id ? 'active' : ''} ${selectedMediaAssetIds.includes(asset.id) ? 'media-card-selected' : ''}`}
+                        onClick={() => handleMediaCardClick(asset.id)}
                       >
+                        {mediaSelectionMode ? (
+                          <span className={`media-card-check ${selectedMediaAssetIds.includes(asset.id) ? 'checked' : ''}`}>
+                            {selectedMediaAssetIds.includes(asset.id) ? '✓' : ''}
+                          </span>
+                        ) : null}
                         {asset.kind === 'image' ? (
                           <img className="media-card-thumb" src={convertFileSrc(asset.absolutePath)} alt={asset.fileName} />
                         ) : (
@@ -4743,8 +5109,10 @@ function App() {
                               onClick={() => void item.run()}
                             >
                               <div className="command-palette-item-main">
-                                <strong>{item.title}</strong>
-                                {item.subtitle ? <span>{item.subtitle}</span> : null}
+                                <strong>{renderHighlightedText(item.title, commandPaletteQuery)}</strong>
+                                {item.subtitle ? (
+                                  <span>{renderHighlightedText(item.subtitle, commandPaletteQuery)}</span>
+                                ) : null}
                               </div>
                               <div className="command-palette-item-meta">
                                 {item.meta ? <span>{item.meta}</span> : null}
@@ -5032,12 +5400,18 @@ function App() {
                       <span>
                         {syncStatus.conflictCount > 0
                           ? `${syncStatus.conflictCount} conflict${syncStatus.conflictCount === 1 ? '' : 's'} need a decision.`
-                          : syncStatus.copiedCount > 0 || syncStatus.skippedCount > 0
-                            ? `${syncStatus.copiedCount} copied • ${syncStatus.skippedCount} unchanged`
+                          : syncStatus.copiedCount > 0 || syncStatus.skippedCount > 0 || syncStatus.deletedCount > 0
+                            ? `${syncStatus.copiedCount} copied • ${syncStatus.deletedCount} deleted • ${syncStatus.skippedCount} unchanged`
                             : syncStatus.configured
                               ? 'Sync target is configured.'
                               : 'Sync is not configured yet.'}
                       </span>
+                      {syncStatus.lastSyncAtMs ? (
+                        <span>
+                          Last sync {formatRelativeDate(syncStatus.lastSyncAtMs)} • {syncStatus.lastSyncDirection || 'none'}
+                        </span>
+                      ) : null}
+                      {syncStatus.lastErrorMessage ? <span>{syncStatus.lastErrorMessage}</span> : null}
                     </div>
                     {syncStatus.localSnapshot || syncStatus.remoteSnapshot ? (
                       <div className="sync-snapshot-grid">

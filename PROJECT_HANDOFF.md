@@ -127,6 +127,8 @@ KnowledgeBase/
     index.db
     settings.json
     sync-manifest.json
+    sync-config.json
+    sync-state.json
 ```
 
 Rules:
@@ -135,6 +137,8 @@ Rules:
 - unassigned `journal` documents live in `notes/journal/`
 - assigned documents move into `notes/notebooks/<Notebook Name>/`
 - moving a note must preserve its relative asset links
+- sync config now lives in `.notebase/sync-config.json`, so the frontend no longer persists WebDAV passwords in `localStorage`
+- recent sync state now lives in `.notebase/sync-state.json`
 
 Legacy compatibility:
 - older test libraries may still contain legacy directories such as `inbox/`, `projects/`, and `topics/`
@@ -168,6 +172,12 @@ Implemented and working at a meaningful first pass:
 - media library safe delete flow for unlinked assets only
 - media library sorting and richer sidebar previews for image/video/pdf/audio
 - sync settings now surface conflict summaries and per-file keep-local / keep-remote actions
+- command palette search now highlights hits and remembers the last filters
+- command palette ranking now favors strong title matches and recently edited notes
+- media library now supports batch selection and bulk cleanup for selected unlinked assets
+- graph view now supports focused/full scope switching and in-graph search
+- graph nodes now select in place and expose a detail card before navigating away
+- sync preferences now live in `.notebase`, include persisted status, and propagate safe deletions
 - sync entry and first-pass sync workflow
 - notebook creation
 - notebook assignment UI
@@ -197,6 +207,8 @@ Implemented and working at a meaningful first pass:
 - sync configuration is behind the sync entry, not in the editor workflow
 - when a sync run finds conflicts, the sync entry now routes the user into the sync settings view instead of retrying blindly
 - the sync settings view shows local/remote snapshots plus per-file resolution actions
+- sync summary now includes last sync time, direction, recent error, and delete propagation counts
+- synced deletions only propagate automatically when the destination file still matches the last manifest entry; otherwise the file stays as a conflict
 
 ### Media
 - asset linkage is resolved from real markdown link targets, not filename substring matching
@@ -217,10 +229,10 @@ Remaining validation:
 ## 9. Recommended next work
 
 P1:
-1. improve search ranking/highlighting and saved filters
-2. continue graph polish and media library batch operations / bulk selection
-3. improve sync conflict UX beyond the current per-file resolution list
-4. move credentials into safer storage
+1. continue search relevance tuning beyond the current title/recency weighting
+2. continue graph polish and media library batch actions beyond the current scope/search and selection/delete flow
+3. improve sync conflict UX beyond the current per-file resolution list and status summary
+4. evaluate a stronger OS-backed secret store beyond the current `.notebase` config handoff
 
 ## 10. Environment and verification
 
