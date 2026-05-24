@@ -19,7 +19,6 @@ declare global {
   }
 }
 
-const SYNC_CONFIG_KEY = 'notebase:sync-config'
 const SELECTED_NOTE_KEY = 'notebase:selected-note-id'
 const NOTEBOOKS_KEY = 'notebase:notebooks'
 const COMMAND_PALETTE_DOCUMENT_FILTER_KEY = 'notebase:command-palette-document-filter'
@@ -246,8 +245,25 @@ type SyncStatusResponse = {
   remoteSnapshot: LibrarySnapshot | null
   copiedCount: number
   skippedCount: number
+  deletedCount: number
   conflictCount: number
   conflicts: string[]
+  lastSyncAtMs: number | null
+  lastSyncDirection: string
+  lastErrorMessage: string | null
+}
+
+type PersistedSyncState = {
+  lastSyncAtMs: number | null
+  lastSyncDirection: string
+  lastErrorMessage: string | null
+  lastMessage: string
+  unresolvedConflicts: string[]
+}
+
+type SyncPreferencesResponse = {
+  config: SyncConfig | null
+  state: PersistedSyncState
 }
 
 const emptySyncConfig: SyncConfig = {
@@ -275,8 +291,12 @@ const emptySyncStatus = (message: string): SyncStatusResponse => ({
   remoteSnapshot: null,
   copiedCount: 0,
   skippedCount: 0,
+  deletedCount: 0,
   conflictCount: 0,
   conflicts: [],
+  lastSyncAtMs: null,
+  lastSyncDirection: 'none',
+  lastErrorMessage: null,
 })
 
 const isTauriRuntime = () =>
@@ -360,28 +380,6 @@ const loadStoredCommandPaletteFilter = (key: string, fallback = 'all') => {
 
   const value = window.localStorage.getItem(key)?.trim()
   return value ? value : fallback
-}
-
-const loadStoredSyncConfig = (): SyncConfig | null => {
-  if (typeof window === 'undefined') {
-    return null
-  }
-
-  const raw = window.localStorage.getItem(SYNC_CONFIG_KEY)
-  if (!raw) {
-    return null
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as Partial<SyncConfig>
-    return {
-      ...emptySyncConfig,
-      ...parsed,
-      protocol: parsed.protocol === 'https' ? 'https' : 'http',
-    }
-  } catch {
-    return null
-  }
 }
 
 const loadStoredNotebooks = () => {
@@ -1268,8 +1266,8 @@ function App() {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
   const [saveMessage, setSaveMessage] = useState('Select a note to start editing.')
   const [editorViewMode, setEditorViewMode] = useState<EditorViewMode>('markdown')
-  const [syncConfig, setSyncConfig] = useState<SyncConfig | null>(() => loadStoredSyncConfig())
-  const [draftSyncConfig, setDraftSyncConfig] = useState<SyncConfig>(() => loadStoredSyncConfig() ?? emptySyncConfig)
+  const [syncConfig, setSyncConfig] = useState<SyncConfig | null>(null)
+  const [draftSyncConfig, setDraftSyncConfig] = useState<SyncConfig>(emptySyncConfig)
   const [syncStatus, setSyncStatus] = useState<SyncStatusResponse>(
     emptySyncStatus('Sync has not been configured. Offline mode is active.'),
   )
@@ -1620,14 +1618,6 @@ function App() {
   }, [selectedNoteId])
 
   useEffect(() => {
-    if (syncConfig) {
-      window.localStorage.setItem(SYNC_CONFIG_KEY, JSON.stringify(syncConfig))
-    } else {
-      window.localStorage.removeItem(SYNC_CONFIG_KEY)
-    }
-  }, [syncConfig])
-
-  useEffect(() => {
     window.localStorage.setItem(NOTEBOOKS_KEY, JSON.stringify(storedNotebooks))
   }, [storedNotebooks])
 
@@ -1821,9 +1811,27 @@ function App() {
         await refreshLocalWorkspace(response.rootPath)
         await refreshMediaAssets(response.rootPath)
         await refreshMigrationLog(response.rootPath)
+        const syncPreferences = await invokeWithTimeout<SyncPreferencesResponse>('load_sync_preferences', {
+          localRootPath: response.rootPath,
+        })
+        if (cancelled) {
+          return
+        }
+        setSyncConfig(syncPreferences.config)
+        setDraftSyncConfig(syncPreferences.config ?? emptySyncConfig)
 
-        if (syncConfig) {
-          await assessSyncReadiness(response.rootPath, syncConfig)
+        if (syncPreferences.config) {
+          await assessSyncReadiness(response.rootPath, syncPreferences.config)
+        } else if (syncPreferences.state.lastMessage) {
+          setSyncStatus({
+            ...emptySyncStatus(syncPreferences.state.lastMessage),
+            configured: false,
+            lastSyncAtMs: syncPreferences.state.lastSyncAtMs,
+            lastSyncDirection: syncPreferences.state.lastSyncDirection || 'none',
+            lastErrorMessage: syncPreferences.state.lastErrorMessage,
+            conflicts: syncPreferences.state.unresolvedConflicts,
+            conflictCount: syncPreferences.state.unresolvedConflicts.length,
+          })
         } else {
           setSyncStatus(
             emptySyncStatus(
@@ -1849,7 +1857,7 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [assessSyncReadiness, refreshLocalWorkspace, refreshMediaAssets, refreshMigrationLog, runningInTauri, syncConfig])
+  }, [assessSyncReadiness, refreshLocalWorkspace, refreshMediaAssets, refreshMigrationLog, runningInTauri])
 
   useEffect(() => {
     if (!selectedNoteId || !localRootPath) {
@@ -3002,7 +3010,16 @@ function App() {
   }
 
   const handleConnectSync = async () => {
-    setSyncConfig(draftSyncConfig)
+    if (!runningInTauri || !localRootPath) {
+      return
+    }
+
+    const response = await invokeWithTimeout<SyncPreferencesResponse>('save_sync_preferences', {
+      localRootPath,
+      config: draftSyncConfig,
+    })
+    setSyncConfig(response.config)
+    setDraftSyncConfig(response.config ?? emptySyncConfig)
     await assessSyncReadiness(localRootPath, draftSyncConfig)
     setSettingsPanelOpen(false)
   }
@@ -3106,7 +3123,10 @@ function App() {
     void handleRunSyncWithOptions('push_local_to_remote', false)
   }, [handleRunSyncWithOptions, syncConfig, syncStatus.conflictCount, syncStatus.status])
 
-  const handleDisconnectSync = () => {
+  const handleDisconnectSync = async () => {
+    if (runningInTauri && localRootPath) {
+      await invokeWithTimeout<SyncPreferencesResponse>('clear_sync_preferences', { localRootPath })
+    }
     setSyncConfig(null)
     setDraftSyncConfig(emptySyncConfig)
     setSyncStatus(
@@ -5380,12 +5400,18 @@ function App() {
                       <span>
                         {syncStatus.conflictCount > 0
                           ? `${syncStatus.conflictCount} conflict${syncStatus.conflictCount === 1 ? '' : 's'} need a decision.`
-                          : syncStatus.copiedCount > 0 || syncStatus.skippedCount > 0
-                            ? `${syncStatus.copiedCount} copied • ${syncStatus.skippedCount} unchanged`
+                          : syncStatus.copiedCount > 0 || syncStatus.skippedCount > 0 || syncStatus.deletedCount > 0
+                            ? `${syncStatus.copiedCount} copied • ${syncStatus.deletedCount} deleted • ${syncStatus.skippedCount} unchanged`
                             : syncStatus.configured
                               ? 'Sync target is configured.'
                               : 'Sync is not configured yet.'}
                       </span>
+                      {syncStatus.lastSyncAtMs ? (
+                        <span>
+                          Last sync {formatRelativeDate(syncStatus.lastSyncAtMs)} • {syncStatus.lastSyncDirection || 'none'}
+                        </span>
+                      ) : null}
+                      {syncStatus.lastErrorMessage ? <span>{syncStatus.lastErrorMessage}</span> : null}
                     </div>
                     {syncStatus.localSnapshot || syncStatus.remoteSnapshot ? (
                       <div className="sync-snapshot-grid">
