@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ClipboardEvent,
   type ChangeEvent,
 } from 'react'
 
@@ -32,10 +33,17 @@ const DEFAULT_NOTE_TITLE = 'Untitled note'
 type SaveStatus = 'idle' | 'dirty' | 'saving' | 'saved' | 'error'
 type SyncButtonTone = 'idle' | 'warning' | 'active' | 'busy'
 type EditorViewMode = 'markdown' | 'rich-text' | 'preview'
-type MarkdownSnippetKind = 'h1' | 'h2' | 'bold' | 'list' | 'quote' | 'code' | 'link'
+type MarkdownSnippetKind = 'h1' | 'h2' | 'bold' | 'list' | 'checklist' | 'quote' | 'code' | 'link'
 type AssetImportKind = 'image' | 'file'
-type PreviewBlockType = 'h1' | 'h2' | 'paragraph' | 'quote' | 'list' | 'checklist' | 'code'
-type PreviewBlock = { type: PreviewBlockType; content: string; language?: string }
+type PreviewBlockType = 'h1' | 'h2' | 'paragraph' | 'quote' | 'list' | 'checklist' | 'code' | 'image' | 'filelink'
+type PreviewBlock = {
+  type: PreviewBlockType
+  content: string
+  language?: string
+  alt?: string
+  target?: string
+  label?: string
+}
 type SyncConfig = {
   profileName: string
   protocol: 'http' | 'https'
@@ -499,6 +507,7 @@ const formattingTools: Array<{
   { label: 'H2', kind: 'h2', shortcut: 'Cmd/Ctrl+Opt+2' },
   { label: 'Bold', kind: 'bold', shortcut: 'Cmd/Ctrl+B' },
   { label: 'List', kind: 'list', shortcut: 'Cmd/Ctrl+Shift+7' },
+  { label: 'Checklist', kind: 'checklist', shortcut: 'Cmd/Ctrl+Shift+8' },
   { label: 'Quote', kind: 'quote', shortcut: 'Cmd/Ctrl+Shift+.' },
   { label: 'Code', kind: 'code', shortcut: 'Cmd/Ctrl+Opt+C' },
   { label: 'Link', kind: 'link', shortcut: 'Cmd/Ctrl+K' },
@@ -545,6 +554,7 @@ const toolbarIconMap: Record<(typeof formattingTools)[number]['kind'], string> =
   h2: 'heading2',
   bold: 'bold',
   list: 'list',
+  checklist: 'checklist',
   quote: 'quote',
   code: 'code',
   link: 'link',
@@ -763,6 +773,16 @@ function AppIcon({ name, className }: { name: string; className?: string }) {
           <circle cx="4.5" cy="14" r="0.7" fill="currentColor" stroke="none" />
         </svg>
       )
+    case 'checklist':
+      return (
+        <svg {...commonProps}>
+          <rect x="3.8" y="4.8" width="3" height="3" rx="0.5" />
+          <rect x="3.8" y="11.2" width="3" height="3" rx="0.5" />
+          <path d="m4.6 12.7 0.8 0.9 1.7-2" />
+          <path d="M9 6.3h7" />
+          <path d="M9 12.7h7" />
+        </svg>
+      )
     case 'quote':
       return (
         <svg {...commonProps}>
@@ -826,6 +846,44 @@ const detectOpenWikilink = (body: string, cursor: number) => {
   } satisfies WikilinkDraft
 }
 
+const normalizePathParts = (parts: string[]) => {
+  const normalized: string[] = []
+
+  for (const part of parts) {
+    if (!part || part === '.') {
+      continue
+    }
+    if (part === '..') {
+      normalized.pop()
+      continue
+    }
+    normalized.push(part)
+  }
+
+  return normalized
+}
+
+const resolveRelativeAssetFsPath = (rootPath: string, noteRelativePath: string | null, assetTarget: string) => {
+  const trimmedTarget = assetTarget.trim()
+  if (!trimmedTarget) {
+    return ''
+  }
+
+  if (/^[a-z]+:\/\//i.test(trimmedTarget)) {
+    return trimmedTarget
+  }
+
+  const unwrappedTarget =
+    trimmedTarget.startsWith('<') && trimmedTarget.endsWith('>')
+      ? trimmedTarget.slice(1, -1)
+      : trimmedTarget
+
+  const noteParts = normalizePathParts((noteRelativePath ?? '').split('/').slice(0, -1))
+  const targetParts = normalizePathParts(unwrappedTarget.split('/'))
+  const absoluteParts = normalizePathParts(['notes', ...noteParts, ...targetParts])
+  return [rootPath.replace(/\/+$/g, ''), ...absoluteParts].join('/')
+}
+
 const renderPreviewBlocks = (body: string) => {
   const lines = body.replace(/\r\n/g, '\n').split('\n')
   const blocks: PreviewBlock[] = []
@@ -867,6 +925,22 @@ const renderPreviewBlocks = (body: string) => {
 
     if (trimmed.startsWith('> ')) {
       blocks.push({ type: 'quote', content: trimmed.slice(2).trim() })
+      index += 1
+      continue
+    }
+
+    const imageMatch = trimmed.match(/^!\[([^\]]*)\]\(([^)]+)\)$/)
+    if (imageMatch) {
+      const [, alt, target] = imageMatch
+      blocks.push({ type: 'image', content: trimmed, alt, target })
+      index += 1
+      continue
+    }
+
+    const fileLinkMatch = trimmed.match(/^\[([^\]]+)\]\(([^)]+)\)$/)
+    if (fileLinkMatch) {
+      const [, label, target] = fileLinkMatch
+      blocks.push({ type: 'filelink', content: trimmed, label, target })
       index += 1
       continue
     }
@@ -1203,6 +1277,57 @@ const unindentSelectedLines = (body: string, selectionStart: number, selectionEn
   }
 }
 
+type MarkdownLinePrefixState =
+  | { kind: 'checklist'; lineStart: number; lineEnd: number; indent: string; marker: string; content: string }
+  | { kind: 'list'; lineStart: number; lineEnd: number; indent: string; marker: string; content: string }
+  | { kind: 'quote'; lineStart: number; lineEnd: number; indent: string; marker: string; content: string }
+  | null
+
+const detectMarkdownLinePrefix = (body: string, cursor: number): MarkdownLinePrefixState => {
+  const lineStart = body.lastIndexOf('\n', Math.max(cursor - 1, 0)) + 1
+  const nextBreak = body.indexOf('\n', cursor)
+  const lineEnd = nextBreak === -1 ? body.length : nextBreak
+  const line = body.slice(lineStart, lineEnd)
+
+  const checklistMatch = line.match(/^(\s*)- \[( |x|X)\]\s?(.*)$/)
+  if (checklistMatch) {
+    return {
+      kind: 'checklist',
+      lineStart,
+      lineEnd,
+      indent: checklistMatch[1] ?? '',
+      marker: `${checklistMatch[1] ?? ''}- [ ] `,
+      content: checklistMatch[3] ?? '',
+    }
+  }
+
+  const listMatch = line.match(/^(\s*)- (.*)$/)
+  if (listMatch) {
+    return {
+      kind: 'list',
+      lineStart,
+      lineEnd,
+      indent: listMatch[1] ?? '',
+      marker: `${listMatch[1] ?? ''}- `,
+      content: listMatch[2] ?? '',
+    }
+  }
+
+  const quoteMatch = line.match(/^(\s*)>\s?(.*)$/)
+  if (quoteMatch) {
+    return {
+      kind: 'quote',
+      lineStart,
+      lineEnd,
+      indent: quoteMatch[1] ?? '',
+      marker: `${quoteMatch[1] ?? ''}> `,
+      content: quoteMatch[2] ?? '',
+    }
+  }
+
+  return null
+}
+
 function App() {
   const [localRootPath, setLocalRootPath] = useState('')
   const [localLibraryMessage, setLocalLibraryMessage] = useState(
@@ -1379,6 +1504,14 @@ function App() {
   const selectedNote = selectedNoteId
     ? knowledgeBaseIndex.notes.find((note) => note.id === selectedNoteId) ?? null
     : null
+  const resolvePreviewAssetFsPath = useCallback(
+    (target: string) => resolveRelativeAssetFsPath(localRootPath || '', selectedNote?.relativePath ?? null, target),
+    [localRootPath, selectedNote?.relativePath],
+  )
+  const resolvePreviewAssetUrl = useCallback(
+    (target: string) => convertFileSrc(resolvePreviewAssetFsPath(target)),
+    [resolvePreviewAssetFsPath],
+  )
   const selectedMediaAsset =
     mediaAssets.find((asset) => asset.id === selectedMediaAssetId) ?? mediaAssets[0] ?? null
   const selectedMediaAssets = useMemo(
@@ -2188,6 +2321,15 @@ function App() {
             : '- List item'
           selectionOffset = replacement.length
           break
+        case 'checklist':
+          replacement = selectedText
+            ? selectedText
+                .split('\n')
+                .map((line) => `- [ ] ${line}`)
+                .join('\n')
+            : '- [ ] Todo item'
+          selectionOffset = replacement.length
+          break
         case 'quote':
           replacement = selectedText
             ? selectedText
@@ -2354,6 +2496,24 @@ function App() {
       syncMarkdownFromRichTextEditor,
     ],
   )
+
+  const handleEditorPaste = useCallback(async (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const clipboardFiles = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === 'file')
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file))
+
+    if (clipboardFiles.length === 0) {
+      return
+    }
+
+    event.preventDefault()
+    pendingSelectionRef.current = {
+      start: event.currentTarget.selectionStart,
+      end: event.currentTarget.selectionEnd,
+    }
+    await importAssetFiles(clipboardFiles)
+  }, [importAssetFiles])
 
   const handleOpenLocalPath = async (path: string, mode: 'open' | 'reveal') => {
     if (!runningInTauri) {
@@ -2634,6 +2794,71 @@ function App() {
       return
     }
 
+    if (event.key === 'Enter' && !event.shiftKey) {
+      const textarea = event.currentTarget
+      const selectionStart = textarea.selectionStart
+      const selectionEnd = textarea.selectionEnd
+
+      if (selectionStart === selectionEnd) {
+        const codeFenceContext = detectCodeFenceContext(editorBody, selectionStart, selectionEnd)
+        if (codeFenceContext.insideFence) {
+          return
+        }
+
+        const linePrefixState = detectMarkdownLinePrefix(editorBody, selectionStart)
+        if (linePrefixState) {
+          event.preventDefault()
+
+          const trimmedContent = linePrefixState.content.trim()
+          if (!trimmedContent) {
+            const nextBody =
+              editorBody.slice(0, linePrefixState.lineStart) + editorBody.slice(linePrefixState.lineEnd)
+            applyEditorBody(nextBody)
+            applyTextSelection(linePrefixState.lineStart, linePrefixState.lineStart)
+            syncWikilinkDraft(nextBody, linePrefixState.lineStart, linePrefixState.lineStart)
+            return
+          }
+
+          const insertion = `\n${linePrefixState.marker}`
+          const nextBody =
+            editorBody.slice(0, selectionStart) + insertion + editorBody.slice(selectionEnd)
+          const nextCursor = selectionStart + insertion.length
+          applyEditorBody(nextBody)
+          applyTextSelection(nextCursor, nextCursor)
+          syncWikilinkDraft(nextBody, nextCursor, nextCursor)
+          return
+        }
+      }
+    }
+
+    if (event.key === 'Backspace') {
+      const textarea = event.currentTarget
+      const selectionStart = textarea.selectionStart
+      const selectionEnd = textarea.selectionEnd
+
+      if (selectionStart === selectionEnd) {
+        const codeFenceContext = detectCodeFenceContext(editorBody, selectionStart, selectionEnd)
+        if (codeFenceContext.insideFence) {
+          return
+        }
+
+        const linePrefixState = detectMarkdownLinePrefix(editorBody, selectionStart)
+        if (
+          linePrefixState &&
+          selectionStart <= linePrefixState.lineStart + linePrefixState.marker.length &&
+          !linePrefixState.content.trim()
+        ) {
+          event.preventDefault()
+          const nextBody =
+            editorBody.slice(0, linePrefixState.lineStart) + editorBody.slice(linePrefixState.lineEnd)
+          applyEditorBody(nextBody)
+          applyTextSelection(linePrefixState.lineStart, linePrefixState.lineStart)
+          syncWikilinkDraft(nextBody, linePrefixState.lineStart, linePrefixState.lineStart)
+          return
+        }
+      }
+    }
+
     if (event.key === 'Tab') {
       event.preventDefault()
       const textarea = event.currentTarget
@@ -2852,6 +3077,14 @@ function App() {
           applyRichTextCommand('list')
         } else if (editorViewMode === 'markdown') {
           void insertMarkdownSnippet('list')
+        }
+        return
+      }
+
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key === '8') {
+        event.preventDefault()
+        if (editorViewMode === 'markdown') {
+          void insertMarkdownSnippet('checklist')
         }
         return
       }
@@ -4291,6 +4524,32 @@ function App() {
                                   </div>
                                 )
                               }
+                              if (block.type === 'image' && block.target) {
+                                return (
+                                  <figure key={`${block.type}-${index}`} className="preview-media-block">
+                                    <img
+                                      className="preview-media-image"
+                                      src={resolvePreviewAssetUrl(block.target)}
+                                      alt={block.alt || 'image'}
+                                    />
+                                    <figcaption>{block.alt || block.target}</figcaption>
+                                  </figure>
+                                )
+                              }
+                              if (block.type === 'filelink' && block.target) {
+                                const target = block.target
+                                return (
+                                  <button
+                                    key={`${block.type}-${index}`}
+                                    type="button"
+                                    className="preview-file-card"
+                                    onClick={() => void handleOpenLocalPath(resolvePreviewAssetFsPath(target), 'open')}
+                                  >
+                                    <strong>{block.label || 'Attachment'}</strong>
+                                    <span>{target}</span>
+                                  </button>
+                                )
+                              }
                               return <p key={`${block.type}-${index}`}>{renderInlinePreview(block.content)}</p>
                             })
                           ) : (
@@ -4313,6 +4572,7 @@ function App() {
                             placeholder="Start writing..."
                             onChange={handleEditorBodyChange}
                             onKeyDown={handleEditorKeyDown}
+                            onPaste={(event) => void handleEditorPaste(event)}
                             onClick={(event) =>
                               syncWikilinkDraft(
                                 event.currentTarget.value,

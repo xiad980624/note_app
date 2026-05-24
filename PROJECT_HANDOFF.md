@@ -178,6 +178,8 @@ Implemented and working at a meaningful first pass:
 - graph view now supports focused/full scope switching and in-graph search
 - graph nodes now select in place and expose a detail card before navigating away
 - sync preferences now live in `.notebase`, include persisted status, and propagate safe deletions
+- editor now supports clipboard asset paste and richer preview rendering for local media
+- editor now supports checklist insertion plus automatic continue/exit behavior for lists, checklists, and blockquotes
 - sync entry and first-pass sync workflow
 - notebook creation
 - notebook assignment UI
@@ -194,6 +196,8 @@ Implemented and working at a meaningful first pass:
 - save composes title + body back into markdown
 - duplicate leading `# title` headings are stripped from the body so the title bar is the single source of truth
 - preview renders from the composed markdown
+- pressing Enter at the end of a non-empty list, checklist, or quote line continues that structure automatically
+- pressing Enter or Backspace on an empty list, checklist, or quote line exits that structure cleanly
 - new notes focus the title when they still use the default title
 
 ### Notebook assignment
