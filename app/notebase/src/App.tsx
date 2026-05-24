@@ -33,7 +33,7 @@ const DEFAULT_NOTE_TITLE = 'Untitled note'
 type SaveStatus = 'idle' | 'dirty' | 'saving' | 'saved' | 'error'
 type SyncButtonTone = 'idle' | 'warning' | 'active' | 'busy'
 type EditorViewMode = 'markdown' | 'rich-text' | 'preview'
-type MarkdownSnippetKind = 'h1' | 'h2' | 'bold' | 'list' | 'quote' | 'code' | 'link'
+type MarkdownSnippetKind = 'h1' | 'h2' | 'bold' | 'list' | 'checklist' | 'quote' | 'code' | 'link'
 type AssetImportKind = 'image' | 'file'
 type PreviewBlockType = 'h1' | 'h2' | 'paragraph' | 'quote' | 'list' | 'checklist' | 'code' | 'image' | 'filelink'
 type PreviewBlock = {
@@ -507,6 +507,7 @@ const formattingTools: Array<{
   { label: 'H2', kind: 'h2', shortcut: 'Cmd/Ctrl+Opt+2' },
   { label: 'Bold', kind: 'bold', shortcut: 'Cmd/Ctrl+B' },
   { label: 'List', kind: 'list', shortcut: 'Cmd/Ctrl+Shift+7' },
+  { label: 'Checklist', kind: 'checklist', shortcut: 'Cmd/Ctrl+Shift+8' },
   { label: 'Quote', kind: 'quote', shortcut: 'Cmd/Ctrl+Shift+.' },
   { label: 'Code', kind: 'code', shortcut: 'Cmd/Ctrl+Opt+C' },
   { label: 'Link', kind: 'link', shortcut: 'Cmd/Ctrl+K' },
@@ -553,6 +554,7 @@ const toolbarIconMap: Record<(typeof formattingTools)[number]['kind'], string> =
   h2: 'heading2',
   bold: 'bold',
   list: 'list',
+  checklist: 'checklist',
   quote: 'quote',
   code: 'code',
   link: 'link',
@@ -769,6 +771,16 @@ function AppIcon({ name, className }: { name: string; className?: string }) {
           <circle cx="4.5" cy="6" r="0.7" fill="currentColor" stroke="none" />
           <circle cx="4.5" cy="10" r="0.7" fill="currentColor" stroke="none" />
           <circle cx="4.5" cy="14" r="0.7" fill="currentColor" stroke="none" />
+        </svg>
+      )
+    case 'checklist':
+      return (
+        <svg {...commonProps}>
+          <rect x="3.8" y="4.8" width="3" height="3" rx="0.5" />
+          <rect x="3.8" y="11.2" width="3" height="3" rx="0.5" />
+          <path d="m4.6 12.7 0.8 0.9 1.7-2" />
+          <path d="M9 6.3h7" />
+          <path d="M9 12.7h7" />
         </svg>
       )
     case 'quote':
@@ -1263,6 +1275,57 @@ const unindentSelectedLines = (body: string, selectionStart: number, selectionEn
     selectionStart: Math.max(lineStart, selectionStart - 2),
     selectionEnd: Math.max(lineStart, selectionEnd - removedSpaces),
   }
+}
+
+type MarkdownLinePrefixState =
+  | { kind: 'checklist'; lineStart: number; lineEnd: number; indent: string; marker: string; content: string }
+  | { kind: 'list'; lineStart: number; lineEnd: number; indent: string; marker: string; content: string }
+  | { kind: 'quote'; lineStart: number; lineEnd: number; indent: string; marker: string; content: string }
+  | null
+
+const detectMarkdownLinePrefix = (body: string, cursor: number): MarkdownLinePrefixState => {
+  const lineStart = body.lastIndexOf('\n', Math.max(cursor - 1, 0)) + 1
+  const nextBreak = body.indexOf('\n', cursor)
+  const lineEnd = nextBreak === -1 ? body.length : nextBreak
+  const line = body.slice(lineStart, lineEnd)
+
+  const checklistMatch = line.match(/^(\s*)- \[( |x|X)\]\s?(.*)$/)
+  if (checklistMatch) {
+    return {
+      kind: 'checklist',
+      lineStart,
+      lineEnd,
+      indent: checklistMatch[1] ?? '',
+      marker: `${checklistMatch[1] ?? ''}- [ ] `,
+      content: checklistMatch[3] ?? '',
+    }
+  }
+
+  const listMatch = line.match(/^(\s*)- (.*)$/)
+  if (listMatch) {
+    return {
+      kind: 'list',
+      lineStart,
+      lineEnd,
+      indent: listMatch[1] ?? '',
+      marker: `${listMatch[1] ?? ''}- `,
+      content: listMatch[2] ?? '',
+    }
+  }
+
+  const quoteMatch = line.match(/^(\s*)>\s?(.*)$/)
+  if (quoteMatch) {
+    return {
+      kind: 'quote',
+      lineStart,
+      lineEnd,
+      indent: quoteMatch[1] ?? '',
+      marker: `${quoteMatch[1] ?? ''}> `,
+      content: quoteMatch[2] ?? '',
+    }
+  }
+
+  return null
 }
 
 function App() {
@@ -2258,6 +2321,15 @@ function App() {
             : '- List item'
           selectionOffset = replacement.length
           break
+        case 'checklist':
+          replacement = selectedText
+            ? selectedText
+                .split('\n')
+                .map((line) => `- [ ] ${line}`)
+                .join('\n')
+            : '- [ ] Todo item'
+          selectionOffset = replacement.length
+          break
         case 'quote':
           replacement = selectedText
             ? selectedText
@@ -2722,6 +2794,71 @@ function App() {
       return
     }
 
+    if (event.key === 'Enter' && !event.shiftKey) {
+      const textarea = event.currentTarget
+      const selectionStart = textarea.selectionStart
+      const selectionEnd = textarea.selectionEnd
+
+      if (selectionStart === selectionEnd) {
+        const codeFenceContext = detectCodeFenceContext(editorBody, selectionStart, selectionEnd)
+        if (codeFenceContext.insideFence) {
+          return
+        }
+
+        const linePrefixState = detectMarkdownLinePrefix(editorBody, selectionStart)
+        if (linePrefixState) {
+          event.preventDefault()
+
+          const trimmedContent = linePrefixState.content.trim()
+          if (!trimmedContent) {
+            const nextBody =
+              editorBody.slice(0, linePrefixState.lineStart) + editorBody.slice(linePrefixState.lineEnd)
+            applyEditorBody(nextBody)
+            applyTextSelection(linePrefixState.lineStart, linePrefixState.lineStart)
+            syncWikilinkDraft(nextBody, linePrefixState.lineStart, linePrefixState.lineStart)
+            return
+          }
+
+          const insertion = `\n${linePrefixState.marker}`
+          const nextBody =
+            editorBody.slice(0, selectionStart) + insertion + editorBody.slice(selectionEnd)
+          const nextCursor = selectionStart + insertion.length
+          applyEditorBody(nextBody)
+          applyTextSelection(nextCursor, nextCursor)
+          syncWikilinkDraft(nextBody, nextCursor, nextCursor)
+          return
+        }
+      }
+    }
+
+    if (event.key === 'Backspace') {
+      const textarea = event.currentTarget
+      const selectionStart = textarea.selectionStart
+      const selectionEnd = textarea.selectionEnd
+
+      if (selectionStart === selectionEnd) {
+        const codeFenceContext = detectCodeFenceContext(editorBody, selectionStart, selectionEnd)
+        if (codeFenceContext.insideFence) {
+          return
+        }
+
+        const linePrefixState = detectMarkdownLinePrefix(editorBody, selectionStart)
+        if (
+          linePrefixState &&
+          selectionStart <= linePrefixState.lineStart + linePrefixState.marker.length &&
+          !linePrefixState.content.trim()
+        ) {
+          event.preventDefault()
+          const nextBody =
+            editorBody.slice(0, linePrefixState.lineStart) + editorBody.slice(linePrefixState.lineEnd)
+          applyEditorBody(nextBody)
+          applyTextSelection(linePrefixState.lineStart, linePrefixState.lineStart)
+          syncWikilinkDraft(nextBody, linePrefixState.lineStart, linePrefixState.lineStart)
+          return
+        }
+      }
+    }
+
     if (event.key === 'Tab') {
       event.preventDefault()
       const textarea = event.currentTarget
@@ -2940,6 +3077,14 @@ function App() {
           applyRichTextCommand('list')
         } else if (editorViewMode === 'markdown') {
           void insertMarkdownSnippet('list')
+        }
+        return
+      }
+
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key === '8') {
+        event.preventDefault()
+        if (editorViewMode === 'markdown') {
+          void insertMarkdownSnippet('checklist')
         }
         return
       }

@@ -119,6 +119,7 @@ KnowledgeBase/
 - 同步敏感配置和最近同步状态落在 `.notebase/sync-config.json` 与 `.notebase/sync-state.json`，由 Tauri 负责读写，前端不再把密码写入 `localStorage`。
 - 当前删除同步使用 manifest 对齐后的保守传播策略：仅当目标侧文件仍与上次同步记录一致时才自动删除，否则升级为冲突交由用户处理。
 - 编辑器中的粘贴导入继续复用现有 `import_asset` 流程，不新增独立剪贴板上传协议；预览回显在前端根据笔记相对路径解析本地附件绝对路径。
+- Markdown 编辑器继续保持 textarea + 轻量语义增强路线：列表 / checklist / 引用的自动续写与退出由前端按行前缀解析处理，不引入重型编辑器框架。
 - 文档移动到 notebook 时，需要同步维护正文中的相对附件路径。
 - 历史测试库可能仍存在 `inbox / projects / topics` 等旧目录；当前 Tauri 后端在加载知识库时迁移其中的 markdown 文件：
   - `inbox` 迁移为未归档 `notes/note/`
