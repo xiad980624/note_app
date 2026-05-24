@@ -1316,6 +1316,7 @@ function App() {
   const [graphBusy, setGraphBusy] = useState(false)
   const [graphScope, setGraphScope] = useState<GraphScope>('focused')
   const [graphQuery, setGraphQuery] = useState('')
+  const [graphSelectedNodeId, setGraphSelectedNodeId] = useState<string | null>(null)
   const [mediaAssets, setMediaAssets] = useState<MediaAssetRecord[]>([])
   const [selectedMediaAssetId, setSelectedMediaAssetId] = useState<string | null>(null)
   const [mediaActionBusy, setMediaActionBusy] = useState(false)
@@ -1487,8 +1488,10 @@ function App() {
       ? knowledgeGraph.nodes.find((node) => matchedNodeIds.has(node.id))?.id ?? null
       : knowledgeGraph.nodes.find((node) => node.kind === 'note')?.id ?? null
     const selectedNodeId =
-      selectedNoteId && (!graphQueryLower || matchedNodeIds.has(selectedNoteId))
-        ? selectedNoteId
+      graphSelectedNodeId && (!graphQueryLower || matchedNodeIds.has(graphSelectedNodeId))
+        ? graphSelectedNodeId
+        : selectedNoteId && (!graphQueryLower || matchedNodeIds.has(selectedNoteId))
+          ? selectedNoteId
         : fallbackNodeId
     const visibleNodeIds = new Set<string>()
 
@@ -1551,7 +1554,39 @@ function App() {
     }
 
     return { nodes: visibleNodes, edges: visibleEdges, layout, centerNode }
-  }, [graphQueryLower, graphScope, knowledgeGraph, selectedNoteId])
+  }, [graphQueryLower, graphScope, graphSelectedNodeId, knowledgeGraph, selectedNoteId])
+  const activeGraphNode =
+    graphViewport.centerNode ??
+    graphViewport.nodes.find((node) => node.id === graphSelectedNodeId) ??
+    graphViewport.nodes[0] ??
+    null
+  const activeGraphNodeConnections = useMemo(() => {
+    if (!activeGraphNode) {
+      return { outgoing: 0, incoming: 0, tags: 0 }
+    }
+
+    let outgoing = 0
+    let incoming = 0
+    let tags = 0
+
+    for (const edge of knowledgeGraph.edges) {
+      if (edge.kind === 'tag') {
+        if (edge.source === activeGraphNode.id || edge.target === activeGraphNode.id) {
+          tags += 1
+        }
+        continue
+      }
+
+      if (edge.source === activeGraphNode.id) {
+        outgoing += 1
+      }
+      if (edge.target === activeGraphNode.id) {
+        incoming += 1
+      }
+    }
+
+    return { outgoing, incoming, tags }
+  }, [activeGraphNode, knowledgeGraph.edges])
   const noteMenuTarget =
     noteMenuState
       ? knowledgeBaseIndex.notes.find((note) => note.id === noteMenuState.noteId) ?? null
@@ -4548,7 +4583,7 @@ function App() {
                   {graphViewport.nodes.length > 0 ? (
                     graphViewport.nodes.map((node) => {
                       const position = graphViewport.layout.get(node.id) ?? { x: 50, y: 50 }
-                      const isActive = node.id === selectedNoteId
+                      const isActive = node.id === activeGraphNode?.id
                       return (
                         <button
                           key={node.id}
@@ -4557,13 +4592,7 @@ function App() {
                           style={{ left: `${position.x}%`, top: `${position.y}%` }}
                           title={node.relativePath ?? `#${node.title}`}
                           onClick={() => {
-                            if (node.kind === 'note') {
-                              setSelectedNoteId(node.id)
-                              navigateToView('notes')
-                            } else {
-                              setCommandPaletteTagFilter(node.title)
-                              openCommandPalette()
-                            }
+                            setGraphSelectedNodeId(node.id)
                           }}
                         >
                           <strong>{node.kind === 'tag' ? `#${node.title}` : node.title}</strong>
@@ -4606,10 +4635,50 @@ function App() {
                 <div className="graph-filter-card">
                   <div className="section-heading">
                     <strong>Knowledge Graph</strong>
-                    <button type="button" className="ghost-action" onClick={() => navigateToView('notes')}>
-                      Notes
-                    </button>
+                    {activeGraphNode?.kind === 'note' ? (
+                      <button
+                        type="button"
+                        className="ghost-action"
+                        onClick={() => {
+                          setSelectedNoteId(activeGraphNode.id)
+                          navigateToView('notes')
+                        }}
+                      >
+                        Open Note
+                      </button>
+                    ) : activeGraphNode?.kind === 'tag' ? (
+                      <button
+                        type="button"
+                        className="ghost-action"
+                        onClick={() => {
+                          setCommandPaletteTagFilter(activeGraphNode.title)
+                          openCommandPalette()
+                        }}
+                      >
+                        Search Tag
+                      </button>
+                    ) : (
+                      <button type="button" className="ghost-action" onClick={() => navigateToView('notes')}>
+                        Notes
+                      </button>
+                    )}
                   </div>
+                  {activeGraphNode ? (
+                    <div className="graph-detail-card">
+                      <strong>{activeGraphNode.kind === 'tag' ? `#${activeGraphNode.title}` : activeGraphNode.title}</strong>
+                      <span>
+                        {activeGraphNode.kind === 'tag'
+                          ? 'Tag node'
+                          : `${documentTypeLabel(activeGraphNode.documentType ?? 'note')}${activeGraphNode.notebook ? ` • ${activeGraphNode.notebook}` : ''}`}
+                      </span>
+                      {activeGraphNode.relativePath ? <span>{activeGraphNode.relativePath}</span> : null}
+                      <div className="graph-detail-meta">
+                        <span>{activeGraphNodeConnections.outgoing} outgoing</span>
+                        <span>{activeGraphNodeConnections.incoming} backlinks</span>
+                        <span>{activeGraphNodeConnections.tags} tag links</span>
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="graph-mode-row">
                     <button
                       type="button"

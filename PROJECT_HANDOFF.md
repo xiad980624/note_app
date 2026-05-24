@@ -172,6 +172,7 @@ Implemented and working at a meaningful first pass:
 - command palette ranking now favors strong title matches and recently edited notes
 - media library now supports batch selection and bulk cleanup for selected unlinked assets
 - graph view now supports focused/full scope switching and in-graph search
+- graph nodes now select in place and expose a detail card before navigating away
 - sync entry and first-pass sync workflow
 - notebook creation
 - notebook assignment UI

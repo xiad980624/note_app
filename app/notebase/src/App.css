@@ -2702,6 +2702,32 @@
   border-color: rgba(29, 111, 242, 0.32);
 }
 
+.graph-detail-card {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(244, 243, 248, 0.9);
+}
+
+.graph-detail-card strong {
+  color: var(--ink-strong);
+  font-size: 0.84rem;
+}
+
+.graph-detail-card span {
+  color: var(--ink-soft);
+  font-size: 0.74rem;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.graph-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .graph-filter-row {
   display: grid;
   grid-template-columns: auto 1fr auto;
