@@ -183,6 +183,7 @@ Implemented and working at a meaningful first pass:
 - editor toolbar now keeps only high-frequency actions in the main row; secondary actions live in a shared overflow popover
 - heading, list, checklist, and quote tools now toggle whole lines or selected blocks instead of only prepending one-off markdown snippets
 - bold and link actions now toggle their inline wrappers, and code block insertion keeps the cursor on the code content instead of dropping it at the end
+- opening a note from search, graph, media, backlinks, or outgoing links now reuses one shared note-selection path that restores note workspace context and editor focus
 - sync entry and first-pass sync workflow
 - notebook creation
 - notebook assignment UI
@@ -204,6 +205,7 @@ Implemented and working at a meaningful first pass:
 - secondary editor actions such as headings, quote, image, and file import now live behind a shared `more` menu to keep the writing surface quiet
 - block-level formatting actions now normalize whole-line prefixes, so repeated clicks act like a toggle instead of duplicating markers
 - inline formatting actions now try to preserve the user's editing flow by selecting the text they are most likely to change next
+- cross-workspace note jumps now also restore the left directory context, instead of only changing `selectedNoteId`
 - new notes focus the title when they still use the default title
 
 ### Notebook assignment
