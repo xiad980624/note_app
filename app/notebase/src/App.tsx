@@ -1296,6 +1296,123 @@ const unindentSelectedLines = (body: string, selectionStart: number, selectionEn
   }
 }
 
+const stripMarkdownBlockPrefix = (line: string) => {
+  const checklistMatch = line.match(/^(\s*)- \[(?: |x|X)\]\s?(.*)$/)
+  if (checklistMatch) {
+    return `${checklistMatch[1] ?? ''}${checklistMatch[2] ?? ''}`
+  }
+
+  const listMatch = line.match(/^(\s*)- (.*)$/)
+  if (listMatch) {
+    return `${listMatch[1] ?? ''}${listMatch[2] ?? ''}`
+  }
+
+  const quoteMatch = line.match(/^(\s*)>\s?(.*)$/)
+  if (quoteMatch) {
+    return `${quoteMatch[1] ?? ''}${quoteMatch[2] ?? ''}`
+  }
+
+  const headingMatch = line.match(/^#{1,6}\s+(.*)$/)
+  if (headingMatch) {
+    return headingMatch[1] ?? ''
+  }
+
+  return line
+}
+
+const transformSelectedMarkdownBlock = (
+  body: string,
+  selectionStart: number,
+  selectionEnd: number,
+  kind: Extract<MarkdownSnippetKind, 'h1' | 'h2' | 'list' | 'checklist' | 'quote'>,
+) => {
+  const lineStart = body.lastIndexOf('\n', Math.max(selectionStart - 1, 0)) + 1
+  const nextBreak = body.indexOf('\n', selectionEnd)
+  const lineEnd = nextBreak === -1 ? body.length : nextBreak
+  const target = body.slice(lineStart, lineEnd)
+  const lines = target.split('\n')
+
+  const isActive = lines.every((line) => {
+    if (kind === 'h1') {
+      return /^# (?!#)/.test(line)
+    }
+    if (kind === 'h2') {
+      return /^## (?!#)/.test(line)
+    }
+    if (kind === 'list') {
+      return /^(\s*)- (?!\[(?: |x|X)\]\s?)/.test(line)
+    }
+    if (kind === 'checklist') {
+      return /^(\s*)- \[(?: |x|X)\]\s?/.test(line)
+    }
+    return /^(\s*)>\s?/.test(line)
+  })
+
+  const nextLines = lines.map((line) => {
+    if (isActive) {
+      if (kind === 'h1') {
+        return line.replace(/^# /, '')
+      }
+      if (kind === 'h2') {
+        return line.replace(/^## /, '')
+      }
+      if (kind === 'list') {
+        return line.replace(/^(\s*)- /, '$1')
+      }
+      if (kind === 'checklist') {
+        return line.replace(/^(\s*)- \[(?: |x|X)\]\s?/, '$1')
+      }
+      return line.replace(/^(\s*)>\s?/, '$1')
+    }
+
+    const normalizedLine = stripMarkdownBlockPrefix(line)
+    if (kind === 'h1') {
+      return `# ${normalizedLine.trim()}`.trimEnd()
+    }
+    if (kind === 'h2') {
+      return `## ${normalizedLine.trim()}`.trimEnd()
+    }
+    if (kind === 'list') {
+      return normalizedLine.trim()
+        ? `- ${normalizedLine.trim()}`
+        : '- '
+    }
+    if (kind === 'checklist') {
+      return normalizedLine.trim()
+        ? `- [ ] ${normalizedLine.trim()}`
+        : '- [ ] '
+    }
+    return normalizedLine.trim()
+      ? `> ${normalizedLine.trim()}`
+      : '> '
+  })
+
+  const nextTarget = nextLines.join('\n')
+  const nextBody = body.slice(0, lineStart) + nextTarget + body.slice(lineEnd)
+
+  if (selectionStart === selectionEnd) {
+    const currentLineIndex = target.slice(0, selectionStart - lineStart).split('\n').length - 1
+    const previousLineStart =
+      currentLineIndex === 0
+        ? 0
+        : nextLines.slice(0, currentLineIndex).join('\n').length + 1
+    const currentLine = nextLines[currentLineIndex] ?? nextLines[0] ?? ''
+    const nextCursor = lineStart + previousLineStart + currentLine.length
+
+    return {
+      nextBody,
+      selectionStart: nextCursor,
+      selectionEnd: nextCursor,
+    }
+  }
+
+  return {
+    nextBody,
+    selectionStart: lineStart,
+    selectionEnd: lineStart + nextTarget.length,
+  }
+}
+
 type MarkdownLinePrefixState =
   | { kind: 'checklist'; lineStart: number; lineEnd: number; indent: string; marker: string; content: string }
   | { kind: 'list'; lineStart: number; lineEnd: number; indent: string; marker: string; content: string }
@@ -2343,42 +2460,22 @@ function App() {
 
       switch (kind) {
         case 'h1':
-          replacement = `# ${selectedText || 'Heading'}`
-          selectionOffset = replacement.length
-          break
         case 'h2':
-          replacement = `## ${selectedText || 'Section'}`
-          selectionOffset = replacement.length
-          break
+        case 'list':
+        case 'checklist':
+        case 'quote': {
+          const nextSelection = transformSelectedMarkdownBlock(
+            editorBody,
+            selectionStart,
+            selectionEnd,
+            kind,
+          )
+          applyEditorBody(nextSelection.nextBody)
+          applyTextSelection(nextSelection.selectionStart, nextSelection.selectionEnd)
+          return
+        }
         case 'bold':
           replacement = `**${selectedText || 'bold text'}**`
-          selectionOffset = replacement.length
-          break
-        case 'list':
-          replacement = selectedText
-            ? selectedText
-                .split('\n')
-                .map((line) => `- ${line}`)
-                .join('\n')
-            : '- List item'
-          selectionOffset = replacement.length
-          break
-        case 'checklist':
-          replacement = selectedText
-            ? selectedText
-                .split('\n')
-                .map((line) => `- [ ] ${line}`)
-                .join('\n')
-            : '- [ ] Todo item'
-          selectionOffset = replacement.length
-          break
-        case 'quote':
-          replacement = selectedText
-            ? selectedText
-                .split('\n')
-                .map((line) => `> ${line}`)
-                .join('\n')
-            : '> Quote'
           selectionOffset = replacement.length
           break
         case 'link':
