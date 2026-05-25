@@ -113,6 +113,7 @@ flowchart TD
 - 目录树：显示 `Todo Lists / Notes / Journal / Notebooks` 四组。
 - 编辑区：默认就是写作区，不暴露“Markdown / Rich text”模式概念给用户。
 - 标题与正文分离，但存储时统一回写为 Markdown。
+- 编辑器工具栏：主栏只保留高频操作，低频动作进入统一弹层样式的更多菜单。
 - 右侧关系面板只负责 `Backlinks / Outgoing links / Tags`，不混入同步配置。
 
 ## 6. 视觉与交互原则

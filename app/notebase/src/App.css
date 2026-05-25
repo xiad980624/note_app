@@ -1028,12 +1028,27 @@
 
 .toolbar {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
   margin-top: 12px;
   padding: 4px 0 10px;
   border-bottom: 1px solid rgba(193, 198, 215, 0.22);
   background: transparent;
+}
+
+.toolbar-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 12px;
+  background: rgba(244, 243, 248, 0.56);
+  border: 1px solid rgba(208, 213, 225, 0.52);
+}
+
+.toolbar-group-secondary {
+  background: transparent;
+  border-color: transparent;
 }
 
 .tool-button {
@@ -1058,6 +1073,10 @@
   flex: 1 1 auto;
 }
 
+.toolbar-overflow {
+  position: relative;
+}
+
 .tool-button:disabled {
   cursor: default;
   opacity: 0.45;
@@ -1072,24 +1091,78 @@
   display: none;
 }
 
-.code-language-card {
+.editor-toolbar-popover {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 0;
+  z-index: 20;
   display: grid;
   gap: 12px;
-  margin-top: 12px;
   padding: 14px;
   border-radius: 16px;
-  background: rgba(247, 250, 255, 0.96);
+  min-width: 220px;
+  background: rgba(247, 250, 255, 0.98);
   border: 1px solid rgba(199, 209, 224, 0.72);
+  box-shadow: 0 18px 40px rgba(31, 44, 77, 0.12);
+  backdrop-filter: blur(14px);
 }
 
+.code-language-card {
+  position: relative;
+  top: 0;
+  left: 0;
+  margin-top: 12px;
+}
+
+.editor-popover-header,
 .code-language-header {
   display: grid;
   gap: 4px;
 }
 
+.editor-popover-header span,
 .code-language-header span {
   color: var(--ink-soft);
   font-size: 0.78rem;
+}
+
+.toolbar-overflow-popover {
+  width: 280px;
+}
+
+.toolbar-overflow-list {
+  display: grid;
+  gap: 6px;
+}
+
+.toolbar-overflow-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 0.8rem;
+  text-align: left;
+}
+
+.toolbar-overflow-item:hover {
+  background: rgba(234, 239, 247, 0.88);
+}
+
+.toolbar-overflow-item span:last-child {
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+}
+
+.toolbar-overflow-item-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .code-language-grid {

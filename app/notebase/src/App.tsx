@@ -515,6 +515,17 @@ const formattingTools: Array<{
   { label: 'File', kind: 'file', shortcut: 'Cmd/Ctrl+Shift+F' },
 ]
 
+const primaryToolbarKinds: Array<(typeof formattingTools)[number]['kind']> = [
+  'bold',
+  'list',
+  'checklist',
+  'code',
+  'link',
+]
+
+const primaryFormattingTools = formattingTools.filter((tool) => primaryToolbarKinds.includes(tool.kind))
+const secondaryFormattingTools = formattingTools.filter((tool) => !primaryToolbarKinds.includes(tool.kind))
+
 const commonCodeLanguages = ['plain text', 'ts', 'tsx', 'js', 'jsx', 'rust', 'bash', 'json', 'md']
 
 const documentTypeMeta: Array<{ key: DocumentType; label: string; createLabel: string; icon: string }> = [
@@ -735,6 +746,14 @@ function AppIcon({ name, className }: { name: string; className?: string }) {
           <path d="M15 4.8v2.7h-2.7" />
           <path d="M5 12.5A5 5 0 0 0 13.8 14" />
           <path d="M5 15.2v-2.7h2.7" />
+        </svg>
+      )
+    case 'moreHorizontal':
+      return (
+        <svg {...commonProps}>
+          <circle cx="5.2" cy="10" r="0.9" fill="currentColor" stroke="none" />
+          <circle cx="10" cy="10" r="0.9" fill="currentColor" stroke="none" />
+          <circle cx="14.8" cy="10" r="0.9" fill="currentColor" stroke="none" />
         </svg>
       )
     case 'heading1':
@@ -1401,6 +1420,7 @@ function App() {
   const [resolvingConflictPath, setResolvingConflictPath] = useState<string | null>(null)
   const [isDragActive, setIsDragActive] = useState(false)
   const [codeLanguageMenuOpen, setCodeLanguageMenuOpen] = useState(false)
+  const [toolbarOverflowOpen, setToolbarOverflowOpen] = useState(false)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [commandPaletteQuery, setCommandPaletteQuery] = useState('')
   const [commandPaletteIndex, setCommandPaletteIndex] = useState(0)
@@ -1454,6 +1474,7 @@ function App() {
   const syncButtonTone = syncToneFromStatus(syncStatus, syncBusy)
   const editorTitleRef = useRef<HTMLInputElement | null>(null)
   const editorTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const toolbarMenusRef = useRef<HTMLDivElement | null>(null)
   const richTextEditorRef = useRef<HTMLDivElement | null>(null)
   const assetPickerRef = useRef<HTMLInputElement | null>(null)
   const commandPaletteInputRef = useRef<HTMLInputElement | null>(null)
@@ -1765,6 +1786,27 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem(COMMAND_PALETTE_TAG_FILTER_KEY, commandPaletteTagFilter)
   }, [commandPaletteTagFilter])
+
+  useEffect(() => {
+    if (!codeLanguageMenuOpen && !toolbarOverflowOpen) {
+      return
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target
+      if (!(target instanceof Node) || toolbarMenusRef.current?.contains(target)) {
+        return
+      }
+
+      setCodeLanguageMenuOpen(false)
+      setToolbarOverflowOpen(false)
+    }
+
+    window.addEventListener('pointerdown', handlePointerDown)
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown)
+    }
+  }, [codeLanguageMenuOpen, toolbarOverflowOpen])
 
   const refreshLocalWorkspace = useCallback(async (rootPath: string) => {
     if (!runningInTauri) {
@@ -2384,6 +2426,38 @@ function App() {
     setAssetPickerKind(kind)
     assetPickerRef.current?.click()
   }, [editorBody.length, runningInTauri, selectedNoteId])
+
+  const handleToolbarAction = useCallback(
+    (kind: MarkdownSnippetKind | AssetImportKind) => {
+      setToolbarOverflowOpen(false)
+
+      if (kind === 'image' || kind === 'file') {
+        triggerAssetPicker(kind)
+        return
+      }
+
+      if (kind === 'code') {
+        setCodeLanguageMenuOpen((current) => !current)
+        return
+      }
+
+      if (kind === 'checklist') {
+        setCodeLanguageMenuOpen(false)
+        void insertMarkdownSnippet(kind)
+        return
+      }
+
+      setCodeLanguageMenuOpen(false)
+
+      if (editorViewMode === 'rich-text') {
+        applyRichTextCommand(kind)
+        return
+      }
+
+      void insertMarkdownSnippet(kind)
+    },
+    [applyRichTextCommand, editorViewMode, insertMarkdownSnippet, triggerAssetPicker],
+  )
 
   const readFileAsBase64 = (file: File) =>
     new Promise<string>((resolve, reject) => {
@@ -3067,6 +3141,7 @@ function App() {
 
       if ((event.metaKey || event.ctrlKey) && event.altKey && event.key.toLowerCase() === 'c') {
         event.preventDefault()
+        setToolbarOverflowOpen(false)
         setCodeLanguageMenuOpen((current) => !current)
         return
       }
@@ -4371,66 +4446,94 @@ function App() {
               </section>
 
               <section className="editor-panel">
-                <div className="toolbar">
-                  {formattingTools.map((tool) => (
+                <div ref={toolbarMenusRef} className="toolbar">
+                  <div className="toolbar-group">
+                    {primaryFormattingTools.map((tool) => (
+                      <button
+                        key={tool.label}
+                        type="button"
+                        className={`tool-button ${
+                          tool.kind === 'code' && codeLanguageMenuOpen ? 'tool-button-active' : ''
+                        }`}
+                        title={`${tool.label} • ${tool.shortcut}`}
+                        aria-label={tool.label}
+                        disabled={!selectedNote || editorViewMode === 'preview'}
+                        onClick={() => handleToolbarAction(tool.kind)}
+                      >
+                        <AppIcon name={toolbarIconMap[tool.kind]} className="tool-icon" />
+                      </button>
+                    ))}
+                    <div className="toolbar-overflow">
+                      <button
+                        type="button"
+                        className={`tool-button ${toolbarOverflowOpen ? 'tool-button-active' : ''}`}
+                        title="More formatting"
+                        aria-label="More formatting"
+                        disabled={!selectedNote || editorViewMode === 'preview'}
+                        onClick={() => {
+                          setCodeLanguageMenuOpen(false)
+                          setToolbarOverflowOpen((current) => !current)
+                        }}
+                      >
+                        <AppIcon name="moreHorizontal" className="tool-icon" />
+                      </button>
+                      {toolbarOverflowOpen ? (
+                        <div className="editor-toolbar-popover toolbar-overflow-popover">
+                          <div className="editor-popover-header">
+                            <strong>More formatting</strong>
+                            <span>Keep the writing surface quiet.</span>
+                          </div>
+                          <div className="toolbar-overflow-list">
+                            {secondaryFormattingTools.map((tool) => (
+                              <button
+                                key={tool.label}
+                                type="button"
+                                className="toolbar-overflow-item"
+                                onClick={() => handleToolbarAction(tool.kind)}
+                              >
+                                <span className="toolbar-overflow-item-main">
+                                  <AppIcon name={toolbarIconMap[tool.kind]} className="tool-icon" />
+                                  <span>{tool.label}</span>
+                                </span>
+                                <span>{tool.shortcut}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="toolbar-spacer" />
+                  <div className="toolbar-group toolbar-group-secondary">
                     <button
-                      key={tool.label}
+                      type="button"
+                      className={`tool-button ${editorViewMode === 'preview' ? 'tool-button-active' : ''}`}
+                      title={editorViewMode === 'preview' ? 'Write' : 'Preview'}
+                      aria-label={editorViewMode === 'preview' ? 'Write' : 'Preview'}
+                      onClick={() =>
+                        setEditorViewMode((current) => (current === 'preview' ? 'markdown' : 'preview'))
+                      }
+                    >
+                      <AppIcon
+                        name={editorViewMode === 'preview' ? 'write' : 'preview'}
+                        className="tool-icon"
+                      />
+                    </button>
+                    <button
                       type="button"
                       className="tool-button"
-                      title={`${tool.label} • ${tool.shortcut}`}
-                      aria-label={tool.label}
-                      disabled={!selectedNote || editorViewMode === 'preview'}
-                      onClick={() => {
-                        if (tool.kind === 'image' || tool.kind === 'file') {
-                          triggerAssetPicker(tool.kind)
-                          return
-                        }
-
-                        if (tool.kind === 'code') {
-                          setCodeLanguageMenuOpen((current) => !current)
-                          return
-                        }
-
-                        if (editorViewMode === 'rich-text') {
-                          applyRichTextCommand(tool.kind)
-                          return
-                        }
-
-                        void insertMarkdownSnippet(tool.kind)
-                      }}
+                      title={saveMessage}
+                      aria-label="Save"
+                      disabled={!selectedNote || saveStatus === 'saving' || !hasUnsavedChanges}
+                      onClick={() => void handleSaveNote('manual')}
                     >
-                      <AppIcon name={toolbarIconMap[tool.kind]} className="tool-icon" />
+                      <AppIcon name="sync" className={`tool-icon ${saveStatus === 'saving' ? 'sync-entry-icon-spinning' : ''}`} />
                     </button>
-                  ))}
-                  <div className="toolbar-spacer" />
-                  <button
-                    type="button"
-                    className={`tool-button ${editorViewMode === 'preview' ? 'tool-button-active' : ''}`}
-                    title={editorViewMode === 'preview' ? 'Write' : 'Preview'}
-                    aria-label={editorViewMode === 'preview' ? 'Write' : 'Preview'}
-                    onClick={() =>
-                      setEditorViewMode((current) => (current === 'preview' ? 'markdown' : 'preview'))
-                    }
-                  >
-                    <AppIcon
-                      name={editorViewMode === 'preview' ? 'write' : 'preview'}
-                      className="tool-icon"
-                    />
-                  </button>
-                  <button
-                    type="button"
-                    className="tool-button"
-                    title={saveMessage}
-                    aria-label="Save"
-                    disabled={!selectedNote || saveStatus === 'saving' || !hasUnsavedChanges}
-                    onClick={() => void handleSaveNote('manual')}
-                  >
-                    <AppIcon name="sync" className={`tool-icon ${saveStatus === 'saving' ? 'sync-entry-icon-spinning' : ''}`} />
-                  </button>
+                  </div>
                 </div>
                 {codeLanguageMenuOpen ? (
-                  <div className="code-language-card">
-                    <div className="code-language-header">
+                  <div className="editor-toolbar-popover code-language-card">
+                    <div className="editor-popover-header code-language-header">
                       <strong>Insert code block</strong>
                       <span>Pick a language for the fence.</span>
                     </div>
