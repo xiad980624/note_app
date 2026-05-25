@@ -1518,6 +1518,23 @@ const toggleMarkdownLink = (body: string, selectionStart: number, selectionEnd: 
   }
 }
 
+const findSearchSelectionRange = (query: string, targetText: string) => {
+  const normalizedQuery = query.trim().toLowerCase()
+  if (!normalizedQuery) {
+    return null
+  }
+
+  const matchIndex = targetText.toLowerCase().indexOf(normalizedQuery)
+  if (matchIndex === -1) {
+    return null
+  }
+
+  return {
+    start: matchIndex,
+    end: matchIndex + normalizedQuery.length,
+  }
+}
+
 type MarkdownLinePrefixState =
   | { kind: 'checklist'; lineStart: number; lineEnd: number; indent: string; marker: string; content: string }
   | { kind: 'list'; lineStart: number; lineEnd: number; indent: string; marker: string; content: string }
@@ -2014,6 +2031,44 @@ function App() {
     window.localStorage.setItem(COMMAND_PALETTE_TAG_FILTER_KEY, commandPaletteTagFilter)
   }, [commandPaletteTagFilter])
 
+  const applyPendingSearchSelection = useCallback((title: string, body: string) => {
+    const pendingSearchSelection = pendingSearchSelectionRef.current
+    if (!pendingSearchSelection) {
+      return false
+    }
+
+    pendingSearchSelectionRef.current = null
+    const targetText = pendingSearchSelection.field === 'title' ? title : body
+    const selectionRange = findSearchSelectionRange(pendingSearchSelection.query, targetText)
+    if (!selectionRange) {
+      return false
+    }
+
+    window.requestAnimationFrame(() => {
+      if (pendingSearchSelection.field === 'title') {
+        const titleInput = editorTitleRef.current
+        if (!titleInput) {
+          return
+        }
+
+        titleInput.focus()
+        titleInput.setSelectionRange(selectionRange.start, selectionRange.end)
+        return
+      }
+
+      const textarea = editorTextareaRef.current
+      if (!textarea) {
+        return
+      }
+
+      textarea.focus()
+      textarea.setSelectionRange(selectionRange.start, selectionRange.end)
+    })
+
+    pendingEditorFocusRef.current = null
+    return true
+  }, [])
+
   useEffect(() => {
     if (!codeLanguageMenuOpen && !toolbarOverflowOpen) {
       return
@@ -2133,37 +2188,8 @@ function App() {
       setPendingTags(response.note.tags.join(', '))
       setSaveStatus('idle')
       setSaveMessage(response.message)
-      const pendingSearchSelection = pendingSearchSelectionRef.current
-      if (pendingSearchSelection) {
-        pendingSearchSelectionRef.current = null
-        const query = pendingSearchSelection.query.trim().toLowerCase()
-        const targetText =
-          pendingSearchSelection.field === 'title' ? editableNote.title : editableNote.body
-        const matchIndex = targetText.toLowerCase().indexOf(query)
-        if (query && matchIndex !== -1) {
-          window.requestAnimationFrame(() => {
-            if (pendingSearchSelection.field === 'title') {
-              const titleInput = editorTitleRef.current
-              if (!titleInput) {
-                return
-              }
-
-              titleInput.focus()
-              titleInput.setSelectionRange(matchIndex, matchIndex + query.length)
-              return
-            }
-
-            const textarea = editorTextareaRef.current
-            if (!textarea) {
-              return
-            }
-
-            textarea.focus()
-            textarea.setSelectionRange(matchIndex, matchIndex + query.length)
-          })
-          pendingEditorFocusRef.current = null
-          return
-        }
+      if (applyPendingSearchSelection(editableNote.title, editableNote.body)) {
+        return
       }
 
       if (
@@ -2197,7 +2223,7 @@ function App() {
       setSaveStatus('error')
       setSaveMessage(message)
     }
-  }, [runningInTauri])
+  }, [applyPendingSearchSelection, runningInTauri])
 
   const assessSyncReadiness = useCallback(
     async (rootPath: string, nextConfig: SyncConfig) => {
@@ -3521,6 +3547,13 @@ function App() {
     }
 
     if (noteId === selectedNoteId) {
+      if (options?.searchSelection) {
+        pendingSearchSelectionRef.current = options.searchSelection
+        if (applyPendingSearchSelection(editorTitle, editorBody)) {
+          return
+        }
+      }
+
       if (options?.focusEditor) {
         window.requestAnimationFrame(() => {
           const textarea = editorTextareaRef.current
@@ -3546,7 +3579,7 @@ function App() {
     pendingSearchSelectionRef.current = options?.searchSelection ?? null
     pendingEditorFocusRef.current = options?.focusEditor ? 'body' : null
     setSelectedNoteId(noteId)
-  }, [hasUnsavedChanges, knowledgeBaseIndex.notes, selectedNoteId])
+  }, [applyPendingSearchSelection, editorBody, editorTitle, hasUnsavedChanges, knowledgeBaseIndex.notes, selectedNoteId])
 
   const handleDirectoryNoteClick = useCallback((noteId: string) => {
     if (suppressNextNoteClickRef.current) {
