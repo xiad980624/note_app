@@ -1696,6 +1696,7 @@ function App() {
   const syncButtonTone = syncToneFromStatus(syncStatus, syncBusy)
   const editorTitleRef = useRef<HTMLInputElement | null>(null)
   const editorTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const pendingEditorFocusRef = useRef<'title' | 'body' | null>(null)
   const toolbarMenusRef = useRef<HTMLDivElement | null>(null)
   const richTextEditorRef = useRef<HTMLDivElement | null>(null)
   const assetPickerRef = useRef<HTMLInputElement | null>(null)
@@ -2133,7 +2134,20 @@ function App() {
         response.note.title === 'Untitled todo' ||
         response.note.title === 'Journal entry'
       ) {
+        pendingEditorFocusRef.current = null
         window.requestAnimationFrame(() => editorTitleRef.current?.select())
+      } else if (pendingEditorFocusRef.current === 'body') {
+        pendingEditorFocusRef.current = null
+        window.requestAnimationFrame(() => {
+          const textarea = editorTextareaRef.current
+          if (!textarea) {
+            return
+          }
+
+          textarea.focus()
+          const cursor = textarea.value.length
+          textarea.setSelectionRange(cursor, cursor)
+        })
       }
     } catch (error) {
       const message =
@@ -3442,8 +3456,42 @@ function App() {
     }
   }, [hasUnsavedChanges])
 
-  const handleSelectNote = useCallback((noteId: string) => {
+  const handleSelectNote = useCallback((
+    noteId: string,
+    options?: {
+      navigateToNotes?: boolean
+      focusEditor?: boolean
+    },
+  ) => {
+    const targetNote = knowledgeBaseIndex.notes.find((note) => note.id === noteId)
+
+    if (targetNote) {
+      if (targetNote.notebook) {
+        setExpandedSections((current) => ({ ...current, notebooks: true }))
+        setActiveDirectorySelection({ kind: 'notebook', value: targetNote.notebook })
+      } else {
+        setExpandedSections((current) => ({ ...current, [targetNote.documentType]: true }))
+        setActiveDirectorySelection({ kind: 'type', value: targetNote.documentType })
+      }
+    }
+
+    if (options?.navigateToNotes) {
+      setWorkspaceView('notes')
+    }
+
     if (noteId === selectedNoteId) {
+      if (options?.focusEditor) {
+        window.requestAnimationFrame(() => {
+          const textarea = editorTextareaRef.current
+          if (!textarea) {
+            return
+          }
+
+          textarea.focus()
+          const cursor = textarea.value.length
+          textarea.setSelectionRange(cursor, cursor)
+        })
+      }
       return
     }
 
@@ -3454,8 +3502,9 @@ function App() {
       return
     }
 
+    pendingEditorFocusRef.current = options?.focusEditor ? 'body' : null
     setSelectedNoteId(noteId)
-  }, [hasUnsavedChanges, selectedNoteId])
+  }, [hasUnsavedChanges, knowledgeBaseIndex.notes, selectedNoteId])
 
   const handleDirectoryNoteClick = useCallback((noteId: string) => {
     if (suppressNextNoteClickRef.current) {
@@ -3463,7 +3512,7 @@ function App() {
       return
     }
 
-    handleSelectNote(noteId)
+    handleSelectNote(noteId, { focusEditor: true })
   }, [handleSelectNote])
 
   const handleCreateNote = useCallback(async (documentType: DocumentType = 'note', notebook?: string | null) => {
@@ -4084,7 +4133,7 @@ function App() {
           subtitle: result.snippet,
           meta: `${searchMatchKindLabel(result.matchKind)} • ${documentTypeLabel(result.note.documentType)}${result.note.notebook ? ` • ${result.note.notebook}` : ''}`,
           run: () => {
-            handleSelectNote(result.note.id)
+            handleSelectNote(result.note.id, { navigateToNotes: true, focusEditor: true })
             closeCommandPalette()
           },
         }))
@@ -4100,7 +4149,7 @@ function App() {
         subtitle: note.summary,
         meta: note.relativePath,
         run: () => {
-          handleSelectNote(note.id)
+          handleSelectNote(note.id, { navigateToNotes: true, focusEditor: true })
           closeCommandPalette()
         },
       }))
@@ -5060,7 +5109,7 @@ function App() {
                                 key={item.noteId}
                                 type="button"
                                 className="connection-card"
-                                onClick={() => handleSelectNote(item.noteId)}
+                                onClick={() => handleSelectNote(item.noteId, { focusEditor: true })}
                               >
                                 <strong>{item.title}</strong>
                                 <span>{item.relativePath}</span>
@@ -5086,7 +5135,7 @@ function App() {
                                 key={item.noteId}
                                 type="button"
                                 className="connection-card"
-                                onClick={() => handleSelectNote(item.noteId)}
+                                onClick={() => handleSelectNote(item.noteId, { focusEditor: true })}
                               >
                                 <strong>{item.title}</strong>
                                 <span>{item.relativePath}</span>
@@ -5234,8 +5283,10 @@ function App() {
                         type="button"
                         className="ghost-action"
                         onClick={() => {
-                          setSelectedNoteId(activeGraphNode.id)
-                          navigateToView('notes')
+                          handleSelectNote(activeGraphNode.id, {
+                            navigateToNotes: true,
+                            focusEditor: true,
+                          })
                         }}
                       >
                         Open Note
@@ -5520,8 +5571,10 @@ function App() {
                             type="button"
                             className="connection-card"
                             onClick={() => {
-                              setSelectedNoteId(item.noteId)
-                              navigateToView('notes')
+                              handleSelectNote(item.noteId, {
+                                navigateToNotes: true,
+                                focusEditor: true,
+                              })
                             }}
                           >
                             <strong>{item.title}</strong>
