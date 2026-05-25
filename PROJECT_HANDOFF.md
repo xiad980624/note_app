@@ -185,6 +185,7 @@ Implemented and working at a meaningful first pass:
 - bold and link actions now toggle their inline wrappers, and code block insertion keeps the cursor on the code content instead of dropping it at the end
 - opening a note from search, graph, media, backlinks, or outgoing links now reuses one shared note-selection path that restores note workspace context and editor focus
 - search-result note jumps now try to select the first matching title/body occurrence after the note loads
+- sync settings now surface connection health, latest direction, recommended next step, and richer local/remote snapshot context
 - sync entry and first-pass sync workflow
 - notebook creation
 - notebook assignment UI
@@ -208,6 +209,7 @@ Implemented and working at a meaningful first pass:
 - inline formatting actions now try to preserve the user's editing flow by selecting the text they are most likely to change next
 - cross-workspace note jumps now also restore the left directory context, instead of only changing `selectedNoteId`
 - search jumps now carry a lightweight pending selection so users land closer to the matching text
+- sync status is now easier to interpret without reading raw backend wording; the UI summarizes connection, next step, and recent errors from existing status fields
 - new notes focus the title when they still use the default title
 
 ### Notebook assignment

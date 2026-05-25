@@ -433,6 +433,43 @@ const syncToneFromStatus = (status: SyncStatusResponse, busy: boolean): SyncButt
   return 'idle'
 }
 
+const syncDirectionLabel = (direction: string) => {
+  switch (direction) {
+    case 'push_local_to_remote':
+      return 'Local to remote'
+    case 'pull_remote_to_local':
+      return 'Remote to local'
+    default:
+      return 'None yet'
+  }
+}
+
+const syncSuggestedActionLabel = (status: SyncStatusResponse) => {
+  if (!status.configured) {
+    return 'Save a sync configuration first.'
+  }
+  if (status.requiresInitialDecision) {
+    return 'Choose whether local or remote should be the source for the first sync.'
+  }
+  if (status.conflictCount > 0) {
+    return 'Resolve the remaining conflicts before the next sync run.'
+  }
+  if (!status.reachable) {
+    return 'Re-check the remote target connection before syncing again.'
+  }
+  if (status.status === 'ready') {
+    return 'The remote target is reachable. You can run sync now.'
+  }
+  if (status.status === 'synced') {
+    return 'Review the latest result below, then sync again when you are ready.'
+  }
+  if (status.status === 'failed') {
+    return 'Review the latest error and verify the remote path and credentials.'
+  }
+
+  return 'Sync is ready when you want to connect the local library to the remote target.'
+}
+
 const collectLibraryTags = (notes: RealNoteSummary[]) => {
   const seen = new Set<string>()
 
@@ -6122,6 +6159,76 @@ function App() {
                       ) : null}
                       {syncStatus.lastErrorMessage ? <span>{syncStatus.lastErrorMessage}</span> : null}
                     </div>
+                    <div className="sync-health-grid">
+                      <div className="sync-health-card">
+                        <span className="sync-health-label">Connection</span>
+                        <strong>{syncStatus.reachable ? 'Reachable' : syncConfig ? 'Needs attention' : 'Not configured'}</strong>
+                        <span>{syncConfig ? syncStatus.webdavUrl || 'Remote target pending' : 'Offline only right now'}</span>
+                      </div>
+                      <div className="sync-health-card">
+                        <span className="sync-health-label">Latest direction</span>
+                        <strong>{syncDirectionLabel(syncStatus.lastSyncDirection)}</strong>
+                        <span>
+                          {syncStatus.lastSyncAtMs
+                            ? `Last sync ${formatRelativeDate(syncStatus.lastSyncAtMs)}`
+                            : 'No completed sync yet'}
+                        </span>
+                      </div>
+                      <div className="sync-health-card">
+                        <span className="sync-health-label">Next step</span>
+                        <strong>
+                          {syncStatus.conflictCount > 0
+                            ? `${syncStatus.conflictCount} conflict${syncStatus.conflictCount === 1 ? '' : 's'}`
+                            : syncStatus.requiresInitialDecision
+                              ? 'Choose direction'
+                              : syncStatus.reachable
+                                ? 'Ready to sync'
+                                : 'Check connection'}
+                        </strong>
+                        <span>{syncSuggestedActionLabel(syncStatus)}</span>
+                      </div>
+                    </div>
+                    {syncStatus.lastErrorMessage ? (
+                      <div className="sync-alert-card sync-alert-card-error">
+                        <strong>Last error</strong>
+                        <span>{syncStatus.lastErrorMessage}</span>
+                      </div>
+                    ) : null}
+                    {syncStatus.requiresInitialDecision ? (
+                      <div className="sync-alert-card">
+                        <strong>First sync needs a decision</strong>
+                        <span>{syncSuggestedActionLabel(syncStatus)}</span>
+                        <div className="inline-actions">
+                          <button
+                            type="button"
+                            className="ghost-action"
+                            onClick={() => setDecisionPanelOpen(true)}
+                          >
+                            Review choices
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                    {syncConfig ? (
+                      <div className="sync-quick-actions">
+                        <button
+                          type="button"
+                          className="ghost-action"
+                          disabled={syncBusy}
+                          onClick={() => void assessSyncReadiness(localRootPath, syncConfig)}
+                        >
+                          {syncBusy ? 'Checking…' : 'Re-check connection'}
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-action"
+                          disabled={syncBusy || syncStatus.requiresInitialDecision}
+                          onClick={() => void handleRunSyncWithOptions('push_local_to_remote', false)}
+                        >
+                          {syncBusy ? 'Syncing…' : 'Run sync now'}
+                        </button>
+                      </div>
+                    ) : null}
                     {syncStatus.localSnapshot || syncStatus.remoteSnapshot ? (
                       <div className="sync-snapshot-grid">
                         {syncStatus.localSnapshot ? (
@@ -6129,6 +6236,12 @@ function App() {
                             <strong>Local offline library</strong>
                             <span>{syncStatus.localSnapshot.noteCount} notes</span>
                             <span>{syncStatus.localSnapshot.assetFileCount} assets</span>
+                            <span>
+                              {syncStatus.localSnapshot.latestUpdatedAtMs
+                                ? `Latest update ${formatRelativeDate(syncStatus.localSnapshot.latestUpdatedAtMs)}`
+                                : 'No content timestamp yet'}
+                            </span>
+                            <span>{syncStatus.localSnapshot.hasContent ? 'Contains content' : 'Currently empty'}</span>
                             <span>{syncStatus.localSnapshot.message}</span>
                           </div>
                         ) : null}
@@ -6137,6 +6250,12 @@ function App() {
                             <strong>Remote sync target</strong>
                             <span>{syncStatus.remoteSnapshot.noteCount} notes</span>
                             <span>{syncStatus.remoteSnapshot.assetFileCount} assets</span>
+                            <span>
+                              {syncStatus.remoteSnapshot.latestUpdatedAtMs
+                                ? `Latest update ${formatRelativeDate(syncStatus.remoteSnapshot.latestUpdatedAtMs)}`
+                                : 'No content timestamp yet'}
+                            </span>
+                            <span>{syncStatus.remoteSnapshot.hasContent ? 'Contains content' : 'Currently empty'}</span>
                             <span>{syncStatus.remoteSnapshot.message}</span>
                           </div>
                         ) : null}

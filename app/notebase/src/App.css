@@ -2036,6 +2036,58 @@
   background: rgba(214, 232, 255, 0.5);
 }
 
+.sync-health-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.sync-health-card,
+.sync-alert-card {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(193, 198, 215, 0.16);
+}
+
+.sync-health-label {
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sync-health-card strong,
+.sync-alert-card strong {
+  color: var(--ink-strong);
+}
+
+.sync-health-card span,
+.sync-alert-card span {
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.sync-alert-card {
+  margin-top: 12px;
+}
+
+.sync-alert-card-error {
+  background: rgba(255, 244, 243, 0.92);
+  border-color: rgba(220, 102, 82, 0.18);
+}
+
+.sync-quick-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
 .sync-conflict-list.compact {
   margin-top: 12px;
   padding: 10px;
@@ -3159,6 +3211,7 @@
   }
 
   .sync-snapshot-grid,
+  .sync-health-grid,
   .sync-choice-grid {
     grid-template-columns: 1fr;
   }
