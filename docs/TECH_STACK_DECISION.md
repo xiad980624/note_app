@@ -122,6 +122,7 @@ KnowledgeBase/
 - Markdown 编辑器继续保持 textarea + 轻量语义增强路线：列表 / checklist / 引用的自动续写与退出由前端按行前缀解析处理，不引入重型编辑器框架。
 - 编辑器工具栏保持“主栏 + 溢出菜单”结构，继续用前端本地状态控制弹层而不是引入额外菜单框架。
 - 块级格式按钮继续走字符串变换路线：对当前行或所选多行统一做 heading / list / checklist / quote 前缀切换，避免为这类基础操作引入 Slate / ProseMirror。
+- 内联格式按钮继续走轻量字符串变换路线：`bold` / `link` 做包裹与解包切换，`code block` 插入后直接把选区落在代码内容上，减少额外光标管理框架的必要性。
 - 文档移动到 notebook 时，需要同步维护正文中的相对附件路径。
 - 历史测试库可能仍存在 `inbox / projects / topics` 等旧目录；当前 Tauri 后端在加载知识库时迁移其中的 markdown 文件：
   - `inbox` 迁移为未归档 `notes/note/`

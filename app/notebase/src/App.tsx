@@ -1413,6 +1413,111 @@ const transformSelectedMarkdownBlock = (
   }
 }
 
+const toggleInlineMarkdownWrapper = (
+  body: string,
+  selectionStart: number,
+  selectionEnd: number,
+  prefix: string,
+  suffix: string,
+  placeholder: string,
+) => {
+  const selectedText = body.slice(selectionStart, selectionEnd)
+
+  if (selectionStart !== selectionEnd) {
+    const wrappedSelection = `${prefix}${selectedText}${suffix}`
+    const directlyWrapped =
+      body.slice(selectionStart - prefix.length, selectionStart) === prefix &&
+      body.slice(selectionEnd, selectionEnd + suffix.length) === suffix
+
+    if (directlyWrapped) {
+      const nextBody =
+        body.slice(0, selectionStart - prefix.length) +
+        selectedText +
+        body.slice(selectionEnd + suffix.length)
+      return {
+        nextBody,
+        selectionStart: selectionStart - prefix.length,
+        selectionEnd: selectionEnd - prefix.length,
+      }
+    }
+
+    if (selectedText.startsWith(prefix) && selectedText.endsWith(suffix)) {
+      const unwrapped = selectedText.slice(prefix.length, selectedText.length - suffix.length)
+      const nextBody = body.slice(0, selectionStart) + unwrapped + body.slice(selectionEnd)
+      return {
+        nextBody,
+        selectionStart,
+        selectionEnd: selectionStart + unwrapped.length,
+      }
+    }
+
+    const nextBody = body.slice(0, selectionStart) + wrappedSelection + body.slice(selectionEnd)
+    return {
+      nextBody,
+      selectionStart: selectionStart + prefix.length,
+      selectionEnd: selectionStart + prefix.length + selectedText.length,
+    }
+  }
+
+  const nextBody =
+    body.slice(0, selectionStart) + prefix + placeholder + suffix + body.slice(selectionEnd)
+  return {
+    nextBody,
+    selectionStart: selectionStart + prefix.length,
+    selectionEnd: selectionStart + prefix.length + placeholder.length,
+  }
+}
+
+const toggleMarkdownLink = (body: string, selectionStart: number, selectionEnd: number) => {
+  const selectedText = body.slice(selectionStart, selectionEnd)
+  const directLinkMatch = selectedText.match(/^\[([^\]]+)\]\(([^)]+)\)$/)
+  if (directLinkMatch) {
+    const label = directLinkMatch[1] ?? ''
+    const nextBody = body.slice(0, selectionStart) + label + body.slice(selectionEnd)
+    return {
+      nextBody,
+      selectionStart,
+      selectionEnd: selectionStart + label.length,
+    }
+  }
+
+  if (
+    selectionStart > 0 &&
+    selectionEnd < body.length &&
+    body[selectionStart - 1] === '['
+  ) {
+    const linkEnd = body.indexOf(')', selectionEnd)
+    const closingBracket = body.indexOf('](', selectionEnd)
+    if (closingBracket !== -1 && linkEnd !== -1) {
+      const label = body.slice(selectionStart, selectionEnd)
+      const nextBody = body.slice(0, selectionStart - 1) + label + body.slice(linkEnd + 1)
+      return {
+        nextBody,
+        selectionStart: selectionStart - 1,
+        selectionEnd: selectionStart - 1 + label.length,
+      }
+    }
+  }
+
+  const label = selectedText || 'link text'
+  const href = 'https://example.com'
+  const replacement = `[${label}](${href})`
+  const nextBody = body.slice(0, selectionStart) + replacement + body.slice(selectionEnd)
+  if (selectedText) {
+    return {
+      nextBody,
+      selectionStart: selectionStart + 1,
+      selectionEnd: selectionStart + 1 + label.length,
+    }
+  }
+
+  return {
+    nextBody,
+    selectionStart: selectionStart + label.length + 3,
+    selectionEnd: selectionStart + label.length + 3 + href.length,
+  }
+}
+
 type MarkdownLinePrefixState =
   | { kind: 'checklist'; lineStart: number; lineEnd: number; indent: string; marker: string; content: string }
   | { kind: 'list'; lineStart: number; lineEnd: number; indent: string; marker: string; content: string }
@@ -2400,8 +2505,14 @@ function App() {
         editorBody.slice(0, selectionStart) + replacement + editorBody.slice(selectionEnd)
 
       applyEditorBody(nextText)
-      const nextCursor = selectionStart + replacement.length
-      applyTextSelection(nextCursor, nextCursor)
+      if (selectedText) {
+        const contentStart = selectionStart + openingFence.length + 1
+        applyTextSelection(contentStart, contentStart + selectedText.length)
+        return
+      }
+
+      const contentStart = selectionStart + openingFence.length + 1
+      applyTextSelection(contentStart, contentStart + 4)
     },
     [
       applyEditorBody,
@@ -2454,9 +2565,6 @@ function App() {
 
       const selectionStart = textarea.selectionStart
       const selectionEnd = textarea.selectionEnd
-      const selectedText = editorBody.slice(selectionStart, selectionEnd)
-      let replacement = selectedText
-      let selectionOffset = 0
 
       switch (kind) {
         case 'h1':
@@ -2475,21 +2583,27 @@ function App() {
           return
         }
         case 'bold':
-          replacement = `**${selectedText || 'bold text'}**`
-          selectionOffset = replacement.length
-          break
+          {
+            const nextSelection = toggleInlineMarkdownWrapper(
+              editorBody,
+              selectionStart,
+              selectionEnd,
+              '**',
+              '**',
+              'bold text',
+            )
+            applyEditorBody(nextSelection.nextBody)
+            applyTextSelection(nextSelection.selectionStart, nextSelection.selectionEnd)
+            return
+          }
         case 'link':
-          replacement = `[${selectedText || 'link text'}](https://example.com)`
-          selectionOffset = replacement.length
-          break
+          {
+            const nextSelection = toggleMarkdownLink(editorBody, selectionStart, selectionEnd)
+            applyEditorBody(nextSelection.nextBody)
+            applyTextSelection(nextSelection.selectionStart, nextSelection.selectionEnd)
+            return
+          }
       }
-
-      const nextText =
-        editorBody.slice(0, selectionStart) + replacement + editorBody.slice(selectionEnd)
-      applyEditorBody(nextText)
-
-      const nextCursor = selectionStart + selectionOffset
-      applyTextSelection(nextCursor, nextCursor)
     },
     [applyEditorBody, applyTextSelection, editorBody],
   )
