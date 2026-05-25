@@ -181,6 +181,7 @@ Implemented and working at a meaningful first pass:
 - editor now supports clipboard asset paste and richer preview rendering for local media
 - editor now supports checklist insertion plus automatic continue/exit behavior for lists, checklists, and blockquotes
 - editor toolbar now keeps only high-frequency actions in the main row; secondary actions live in a shared overflow popover
+- heading, list, checklist, and quote tools now toggle whole lines or selected blocks instead of only prepending one-off markdown snippets
 - sync entry and first-pass sync workflow
 - notebook creation
 - notebook assignment UI
@@ -200,6 +201,7 @@ Implemented and working at a meaningful first pass:
 - pressing Enter at the end of a non-empty list, checklist, or quote line continues that structure automatically
 - pressing Enter or Backspace on an empty list, checklist, or quote line exits that structure cleanly
 - secondary editor actions such as headings, quote, image, and file import now live behind a shared `more` menu to keep the writing surface quiet
+- block-level formatting actions now normalize whole-line prefixes, so repeated clicks act like a toggle instead of duplicating markers
 - new notes focus the title when they still use the default title
 
 ### Notebook assignment
