@@ -180,6 +180,7 @@ Implemented and working at a meaningful first pass:
 - sync preferences now live in `.notebase`, include persisted status, and propagate safe deletions
 - editor now supports clipboard asset paste and richer preview rendering for local media
 - editor now supports checklist insertion plus automatic continue/exit behavior for lists, checklists, and blockquotes
+- editor toolbar now keeps only high-frequency actions in the main row; secondary actions live in a shared overflow popover
 - sync entry and first-pass sync workflow
 - notebook creation
 - notebook assignment UI
@@ -198,6 +199,7 @@ Implemented and working at a meaningful first pass:
 - preview renders from the composed markdown
 - pressing Enter at the end of a non-empty list, checklist, or quote line continues that structure automatically
 - pressing Enter or Backspace on an empty list, checklist, or quote line exits that structure cleanly
+- secondary editor actions such as headings, quote, image, and file import now live behind a shared `more` menu to keep the writing surface quiet
 - new notes focus the title when they still use the default title
 
 ### Notebook assignment
