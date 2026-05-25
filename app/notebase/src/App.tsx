@@ -1697,6 +1697,10 @@ function App() {
   const editorTitleRef = useRef<HTMLInputElement | null>(null)
   const editorTextareaRef = useRef<HTMLTextAreaElement | null>(null)
   const pendingEditorFocusRef = useRef<'title' | 'body' | null>(null)
+  const pendingSearchSelectionRef = useRef<{
+    field: 'title' | 'body'
+    query: string
+  } | null>(null)
   const toolbarMenusRef = useRef<HTMLDivElement | null>(null)
   const richTextEditorRef = useRef<HTMLDivElement | null>(null)
   const assetPickerRef = useRef<HTMLInputElement | null>(null)
@@ -2129,6 +2133,39 @@ function App() {
       setPendingTags(response.note.tags.join(', '))
       setSaveStatus('idle')
       setSaveMessage(response.message)
+      const pendingSearchSelection = pendingSearchSelectionRef.current
+      if (pendingSearchSelection) {
+        pendingSearchSelectionRef.current = null
+        const query = pendingSearchSelection.query.trim().toLowerCase()
+        const targetText =
+          pendingSearchSelection.field === 'title' ? editableNote.title : editableNote.body
+        const matchIndex = targetText.toLowerCase().indexOf(query)
+        if (query && matchIndex !== -1) {
+          window.requestAnimationFrame(() => {
+            if (pendingSearchSelection.field === 'title') {
+              const titleInput = editorTitleRef.current
+              if (!titleInput) {
+                return
+              }
+
+              titleInput.focus()
+              titleInput.setSelectionRange(matchIndex, matchIndex + query.length)
+              return
+            }
+
+            const textarea = editorTextareaRef.current
+            if (!textarea) {
+              return
+            }
+
+            textarea.focus()
+            textarea.setSelectionRange(matchIndex, matchIndex + query.length)
+          })
+          pendingEditorFocusRef.current = null
+          return
+        }
+      }
+
       if (
         response.note.title === DEFAULT_NOTE_TITLE ||
         response.note.title === 'Untitled todo' ||
@@ -3461,6 +3498,10 @@ function App() {
     options?: {
       navigateToNotes?: boolean
       focusEditor?: boolean
+      searchSelection?: {
+        field: 'title' | 'body'
+        query: string
+      }
     },
   ) => {
     const targetNote = knowledgeBaseIndex.notes.find((note) => note.id === noteId)
@@ -3502,6 +3543,7 @@ function App() {
       return
     }
 
+    pendingSearchSelectionRef.current = options?.searchSelection ?? null
     pendingEditorFocusRef.current = options?.focusEditor ? 'body' : null
     setSelectedNoteId(noteId)
   }, [hasUnsavedChanges, knowledgeBaseIndex.notes, selectedNoteId])
@@ -4133,7 +4175,14 @@ function App() {
           subtitle: result.snippet,
           meta: `${searchMatchKindLabel(result.matchKind)} • ${documentTypeLabel(result.note.documentType)}${result.note.notebook ? ` • ${result.note.notebook}` : ''}`,
           run: () => {
-            handleSelectNote(result.note.id, { navigateToNotes: true, focusEditor: true })
+            handleSelectNote(result.note.id, {
+              navigateToNotes: true,
+              focusEditor: true,
+              searchSelection: {
+                field: result.matchKind === 'title' ? 'title' : 'body',
+                query: commandPaletteQuery.trim(),
+              },
+            })
             closeCommandPalette()
           },
         }))
